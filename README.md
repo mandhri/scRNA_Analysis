@@ -12,12 +12,16 @@ Single-cell RNA-seq (scRNA-seq) provides powerful, high-resolution views of gene
 7. Save the Cleaned/Annotated Object for downstream analyses (e.g., clustering and differential expression).
 
 # Repository Structure
-├── README.md              # This file
-├── scRNA_preprocessing.Rmd # RMarkdown document with the full walkthrough
-└── data/
-    ├── molecules.txt       # Example count matrix (genes x cells)
-    ├── annotation.txt      # Cell-level annotation/metadata
-    └── umi.rds             # Saved SingleCellExperiment object after QC
+- **scRNA_preprocessing.Rmd**  
+  *RMarkdown document with the full walkthrough*
+
+- **data/**  
+  - `molecules.txt`  
+    *Example count matrix (genes x cells)*  
+  - `annotation.txt`  
+    *Cell-level annotation/metadata*  
+  - `umi.rds`  
+    *Saved SingleCellExperiment object after QC*
 
 # Quick Start
  1. Clone or Download this repository.

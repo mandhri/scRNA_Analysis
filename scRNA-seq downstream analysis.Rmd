@@ -16,10 +16,7 @@ This analysis extends our preprocessing workflow to demonstrate advanced single-
 # Load libraries
 
 ```{r LIBRARIES, message=FALSE, warning=FALSE}
-<<<<<<< HEAD
-=======
-options(repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"))
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+
 library(readxl)
 library(tidyverse)
 library(metafor)
@@ -33,28 +30,17 @@ library(AnnotationDbi)
 library(org.Hs.eg.db)
 library(EnsDb.Hsapiens.v86)
 library(scater)
-<<<<<<< HEAD
-=======
-library(igraph)
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+library(scuttle)
 library(scran)
-
 ```
 
 # Load your preprocessed data
 
-<<<<<<< HEAD
 
 ```{r load_data}
 
-umi <- readRDS("/mnt/vol1/scRNA_playground/resources/DATASETS/Datasets/tung/umi.rds")
+umi <- readRDS("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/umi.rds")
 
-
-=======
-```{r load_data}
-
-umi <- readRDS("/home/mandhri/scRNA_Analysis/DATASETS/Datasets/tung/umi.rds")
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
 ```
 
 # PART 1: Quality Control and Normalisation Strategy
@@ -66,7 +52,7 @@ First, we remove low-quality cells and genes identified during preprocessing:
 assays(umi)$counts holding the expression matrix (genes x cells).
 colData(umi) storing metadata for each cell.
 
-so this SingleCellExperiment object(umi) had 19027 genes (rows) and 864 cells (columns) and now filtered to 13847 genes (rows) and 670 cells (columns) 
+so this SingleCellExperiment object(umi) had 19027 genes (rows) and 864 cells (columns) and now filtered to 13839 genes (rows) and 670 cells (columns) 
 
 ```{r clning_further}
 
@@ -88,13 +74,13 @@ Different normalisation approaches can dramatically affect downstream analysis. 
 ```{r}
 
 # Method 1: Simple log transformation (as baseline)
-assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
+#assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
 
 # Method 2: CPM (Counts Per Million) normalisation
-assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
+#assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
 
 # Method 3: Scran deconvolution normalisation (recommended)
-set.seed(123)
+
 quick_clusters <- quickCluster(umi_filtered, min.size=20)
 umi_filtered <- computeSumFactors(umi_filtered, clusters=quick_clusters)
 
@@ -109,20 +95,16 @@ umi_filtered <- logNormCounts(umi_filtered)  # Creates "logcounts" assay
 
 ###  Visual comparison of normalisation methods
 
-<<<<<<< HEAD
+
 #### Normalisation focused on individual-level differences.
 
 In this analysis, we are focusing on biological (3 biological groups) rather than technical batch effects (9 experimental batches), since for disease mechanism discovery, the biological signal between donors matters far more than technical noise patterns.
 
 Let's compare how each method affects the data structure using PCA:
 
-```{r norm_biological, message=FALSE, warning=FALSE}
-=======
-
 Let's compare how each method affects the data structure using PCA:
 
 ```{r norm, message=FALSE, warning=FALSE}
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
 
 # Run PCA with different normalisation methods
 umi_filtered <- runPCA(umi_filtered, exprs_values="logcounts_raw", name="PCA_raw")
@@ -151,18 +133,17 @@ combined <- plot_grid(
   ncol   = 3,
   align  = "hv"
 )
-ggsave("pca_comparison.png", combined, width=12, height=4)
+ggsave("/mnt/vol1/scRNA_Analysis/pca_comparison.png", combined, width=12, height=4)
 ```
 
 
-<<<<<<< HEAD
 #### Normalisation focused on technical batch effects (9 experimental batches)- Just to focus 
+
 ```{r norm_technical, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
 
 ```
-=======
 
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+
 
 # PART 2: FEATURE SELECTION
 
@@ -171,8 +152,7 @@ ggsave("pca_comparison.png", combined, width=12, height=4)
 
 ```
 
-<<<<<<< HEAD
- 
+
 
 ```{r}
 
@@ -300,12 +280,6 @@ ggsave("pca_comparison.png", combined, width=12, height=4)
 
 ```
 
-
-
-
-
-=======
->>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
 
 ### sessionInfo()
 

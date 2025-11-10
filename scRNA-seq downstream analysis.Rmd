@@ -33,10 +33,14 @@ library(scater)
 library(scuttle)
 library(scran)
 library(igraph)
-
-
-
-
+library(scDblFinder)
+library(fgsea)
+library(GSVA)
+library(msigdbr)
+library(scuttle)
+library(edgeR)
+library(SingleR)
+librarlibrary(scDblFinder)y(celldex)
 
 ```
 
@@ -320,46 +324,100 @@ scater::plotHeatmap(umi_filtered,
 
 ```
 
+# Doublet removal-Optional
 
-```{r}
-```
-
-
-```{r}
-```
-
+If you re-filter, re-run HVGs → fastMNN → clustering quickly
 
 
 ```{r}
-colLabels(umi_mnn) <- factor(cl)
 
-# robust name-matched transfer -> avoids order issues
-labs <- colLabels(umi_mnn)
-names(labs) <- colnames(umi_mnn)
-
-idx <- match(colnames(umi_filtered), names(labs))
-cat("Unmatched cells:", sum(is.na(idx)), "of", length(idx), "\n")
-stopifnot(all(!is.na(idx)))  # fail fast if some cells are missing
-
-umi_filtered$cluster <- labs[idx]
-umi_filtered$cluster <- droplevels(factor(umi_filtered$cluster))
-
-table(umi_filtered$cluster)   # sh
-```
-
-```{r}
+umi_filtered$doublet <- scDblFinder(umi_filtered)$scDblFinder.class
+table(umi_filtered$doublet)
+umi_filtered <- umi_filtered[, umi_filtered$doublet == "singlet"]
 
 ```
+
+# cluster labels (reference-based)
 
 
 
 ```{r}
+
+ref <- HumanPrimaryCellAtlasData()
+pred <- SingleR(test = umi_filtered, ref = ref, labels = ref$label.main)
+umi_filtered$label <- pred$labels
+scater::plotReducedDim(umi_mnn, "UMAP", colour_by = I(umi_filtered$label[colnames(umi_mnn)]))
+
+```
+
+# Pseudo-bulk DE (donor + batch in the model)
+
+```{r}
+# keep clusters from your corrected embedding
+umi_filtered$cluster <- colLabels(umi_mnn)[colnames(umi_filtered)]
+
+pb <- aggregateAcrossCells(
+  umi_filtered,
+  ids = DataFrame(cluster = umi_filtered$cluster,
+                  donor   = umi_filtered$individual,
+                  batch   = umi_filtered$replicate)
+)
+
+y <- DGEList(counts(assay(pb, "counts"))); y <- calcNormFactors(y)
+design <- model.matrix(~ 0 + pb$cluster + pb$donor + pb$batch)
+colnames(design) <- make.names(colnames(design))
+y <- estimateDisp(y, design); fit <- glmQLFit(y, design)
+
+# Example: cluster 3 vs 1 (adjusted for donor+batch)
+con <- makeContrasts(cluster.3 - cluster.1, levels = design)
+de_c3_vs_c1 <- topTags(glmQLFTest(fit, contrast = con), n = Inf)$table
+
 ```
 
 
-  
+# Pathways
+
+## GSVA scores per cluster (module activity)
+
+```{r}
+
+
+gs <- msigdbr(species = "Homo sapiens", category = "H") |> 
+      split(~ gs_name, ~ gene_symbol)
+
+# average logcounts per cluster
+A <- scuttle::sumCountsAcrossCells(umi_filtered, ids = umi_filtered$cluster, average = TRUE)
+lc_avg <- assay(A, "sum")  # actually means
+gsva_scores <- gsva(lc_avg, gs, method = "gsva")  # pathways x clusters
+
+
+
+```
+
+## fgsea on ranked pseudo-bulk stats
+
+```{r}
+
+ranks <- de_c3_vs_c1$logFC; names(ranks) <- rownames(de_c3_vs_c1)
+fg <- fgsea(pathways = gs, stats = ranks, minSize = 10, maxSize = 500)
+fg <- fg[order(fg$padj, -abs(fg$NES)), ]
+head(fg[, c("pathway","NES","padj")], 10)
+
+```
+
+
+# Cell-cycle scoring (sanity check of confounders)
 
 ```{r exprs-qc5}
+
+cc <- scran::cyclone(umi_filtered, pairs = scran::hs.pairs)
+umi_filtered$G1   <- cc$scores$G1
+umi_filtered$S    <- cc$scores$S
+umi_filtered$G2M  <- cc$scores$G2M
+scater::plotReducedDim(umi_mnn, "UMAP", colour_by = I(umi_filtered$S[colnames(umi_mnn)]))
+
+saveRDS(umi_filtered, "/mnt/vol1/scRNA_Analysis/objects/umi_filtered_final.rds")
+saveRDS(umi_mnn,      "/mnt/vol1/scRNA_Analysis/objects/umi_mnn_final.rds")
 
 ```
 
@@ -438,7 +496,7 @@ table(umi_filtered$cluster)   # sh
 
 
 ```{r exprs-qc17}
-table(umi_filtered$cluster) 
+
 ```
 
 

@@ -1,0 +1,316 @@
+---
+title: "Advanced scRNA-seq Downstream Analysis"
+output: html_document
+date: "2025-02-25"
+---
+
+Overview
+This analysis extends our preprocessing workflow to demonstrate advanced single-cell genomics capabilities, focusing on:
+
+- Normalisation method comparison and selection.
+- Cell clustering and subpopulation identification
+- Differential expression analysis
+- Biological pathway insights
+- Disease mechanism discovery
+
+# Load libraries
+
+```{r LIBRARIES, message=FALSE, warning=FALSE}
+<<<<<<< HEAD
+=======
+options(repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"))
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+library(readxl)
+library(tidyverse)
+library(metafor)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(patchwork)
+library(cowplot)
+library(SingleCellExperiment)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(EnsDb.Hsapiens.v86)
+library(scater)
+<<<<<<< HEAD
+=======
+library(igraph)
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+library(scran)
+
+```
+
+# Load your preprocessed data
+
+<<<<<<< HEAD
+
+```{r load_data}
+
+umi <- readRDS("/mnt/vol1/scRNA_playground/resources/DATASETS/Datasets/tung/umi.rds")
+
+
+=======
+```{r load_data}
+
+umi <- readRDS("/home/mandhri/scRNA_Analysis/DATASETS/Datasets/tung/umi.rds")
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+```
+
+# PART 1: Quality Control and Normalisation Strategy
+
+## Initial Filtering
+
+First, we remove low-quality cells and genes identified during preprocessing:
+
+assays(umi)$counts holding the expression matrix (genes x cells).
+colData(umi) storing metadata for each cell.
+
+so this SingleCellExperiment object(umi) had 19027 genes (rows) and 864 cells (columns) and now filtered to 13847 genes (rows) and 670 cells (columns) 
+
+```{r clning_further}
+
+# Remove discarded cells and genes
+umi_filtered <- umi[!rowData(umi)$discard, !colData(umi)$discard]
+print(paste("Filtered to", nrow(umi_filtered), "genes and", ncol(umi_filtered), "cells"))
+```
+
+
+## Normalisation method comparison
+
+Different normalisation approaches can dramatically affect downstream analysis. We will compare three methods:
+
+- Raw log-transformed counts - Simple but depth-dependent
+- CPM normalisation - Library size correction
+- Scran deconvolution - Sophisticated bias correction
+
+
+```{r}
+
+# Method 1: Simple log transformation (as baseline)
+assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
+
+# Method 2: CPM (Counts Per Million) normalisation
+assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
+
+# Method 3: Scran deconvolution normalisation (recommended)
+set.seed(123)
+quick_clusters <- quickCluster(umi_filtered, min.size=20)
+umi_filtered <- computeSumFactors(umi_filtered, clusters=quick_clusters)
+
+# Check size factors are well-behaved
+cat("Size factor summary:")
+print(summary(sizeFactors(umi_filtered)))
+
+# Apply log normalisation using size factors
+umi_filtered <- logNormCounts(umi_filtered)  # Creates "logcounts" assay
+
+```
+
+###  Visual comparison of normalisation methods
+
+<<<<<<< HEAD
+#### Normalisation focused on individual-level differences.
+
+In this analysis, we are focusing on biological (3 biological groups) rather than technical batch effects (9 experimental batches), since for disease mechanism discovery, the biological signal between donors matters far more than technical noise patterns.
+
+Let's compare how each method affects the data structure using PCA:
+
+```{r norm_biological, message=FALSE, warning=FALSE}
+=======
+
+Let's compare how each method affects the data structure using PCA:
+
+```{r norm, message=FALSE, warning=FALSE}
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+
+# Run PCA with different normalisation methods
+umi_filtered <- runPCA(umi_filtered, exprs_values="logcounts_raw", name="PCA_raw")
+umi_filtered <- runPCA(umi_filtered, exprs_values="logcpm", name="PCA_cpm") 
+umi_filtered <- runPCA(umi_filtered, exprs_values="logcounts", name="PCA_scran")
+
+# Create comparison plots
+p1 <- plotPCA(umi_filtered, dimred="PCA_raw", colour_by="individual", shape_by="replicate") +
+  ggtitle("A. Raw Log Counts\n(Depth-dependent)") + 
+  theme_minimal() +
+  theme(legend.position="none")
+
+p2 <- plotPCA(umi_filtered, dimred="PCA_cpm", colour_by="individual", shape_by="replicate") +
+  ggtitle("B. CPM Normalised\n(Better separation)") + 
+  theme_minimal() +
+  theme(legend.position="none")
+
+p3 <- plotPCA(umi_filtered, dimred="PCA_scran", colour_by="individual", shape_by="replicate") +
+  ggtitle("C. Scran Normalised\n(Optimal biological signal)") + 
+  theme_minimal()
+
+# Combine plots
+combined <- plot_grid(
+  p1, p2, p3,
+  labels = c("A","B","C"),
+  ncol   = 3,
+  align  = "hv"
+)
+ggsave("pca_comparison.png", combined, width=12, height=4)
+```
+
+
+<<<<<<< HEAD
+#### Normalisation focused on technical batch effects (9 experimental batches)- Just to focus 
+```{r norm_technical, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+
+```
+=======
+
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+
+# PART 2: FEATURE SELECTION
+
+
+```{r SCE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+
+```
+
+<<<<<<< HEAD
+ 
+
+```{r}
+
+```
+
+
+
+
+```{r exprs-qc4}
+
+
+```
+
+
+
+```{r exprs-qc4b}
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+```
+
+
+  
+
+```{r exprs-qc5}
+
+```
+
+
+```{r exprs-qc6}
+
+```
+
+
+```{r exprs-qc6b}
+
+```
+
+
+
+```{r exprs-qc7}
+
+```
+
+```{r exprs-qc8}
+
+```
+
+
+
+```{r exprs-qc9}
+
+```
+
+
+
+```{r exprs-qc10}
+
+```
+
+
+
+```{r exprs-qc11}
+
+```
+
+
+
+```{r exprs-qc12}
+
+
+```
+
+
+
+```{r exprs-qc13}
+
+```
+
+
+
+```{r exprs-qc14}
+
+```
+
+
+```{r exprs-qc15}
+
+``` 
+
+
+```{r exprs-qc16}
+
+```
+
+
+
+```{r exprs-qc17}
+
+```
+
+
+```{r exprs-qc17}
+
+```
+
+
+
+
+
+=======
+>>>>>>> 06b89519ed172479e939f98bf51752babbabbd48
+
+### sessionInfo()
+
+
+```{r echo=FALSE}
+sessionInfo()
+```
+

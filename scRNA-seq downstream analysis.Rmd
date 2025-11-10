@@ -32,6 +32,12 @@ library(EnsDb.Hsapiens.v86)
 library(scater)
 library(scuttle)
 library(scran)
+library(igraph)
+
+
+
+
+
 ```
 
 # Load your preprocessed data
@@ -74,10 +80,10 @@ Different normalisation approaches can dramatically affect downstream analysis. 
 ```{r}
 
 # Method 1: Simple log transformation (as baseline)
-#assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
+assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
 
 # Method 2: CPM (Counts Per Million) normalisation
-#assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
+assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
 
 # Method 3: Scran deconvolution normalisation (recommended)
 
@@ -105,7 +111,7 @@ Results: As you can see, scran deconvolution + logNormCounts was the best perfor
 
 # Run PCA with different normalisation methods
 umi_filtered <- runPCA(umi_filtered, exprs_values="logcounts_raw", name="PCA_raw")
-umi_filtered <- runPCA(umi_filtered, exprs_values="logcpm", name="PCA_cpm") 
+umi_filtered <- runPCA(umi_filtered, exprs_values="logcpm", name="PCA_cpm")
 umi_filtered <- runPCA(umi_filtered, exprs_values="logcounts", name="PCA_scran")
 
 # Create comparison plots
@@ -135,7 +141,7 @@ ggsave("/mnt/vol1/scRNA_Analysis/pca_comparison.png", combined, width=12, height
 ```
 
 
-#### Pick HVGs (block by replicate so we favour biology) 
+#### Feature selection (HVGs)
 
 HVG-PCA = PCA run on Highly Variable Genes in single-cell RNA-seq.
 
@@ -251,18 +257,52 @@ cbind(
 
 # clustering on the corrected embedding
 
-```{r exprs-qc4}
 
+```{r exprs}
 
+g  <- buildSNNGraph(umi_mnn, use.dimred="corrected", k=20)
+cl <- igraph::cluster_walktrap(g)$membership
+colLabels(umi_mnn) <- factor(cl)
+table(colLabels(umi_mnn))
+
+plotReducedDim(umi_mnn, "UMAP", colour_by="label")
+plotReducedDim(umi_mnn, "UMAP", colour_by="replicate")            # should look mixed
+plotReducedDim(umi_mnn, "UMAP", colour_by="subsets_Mito_percent") # no strong gradient
 
 
 
 ```
 
+# Marker genes per cluster
 
+
+Find up-regulated markers with empirical Bayes shrinkage.
 
 ```{r exprs-qc4b}
 
+umi_filtered$cluster <- colLabels(umi_mnn)[colnames(umi_filtered)]
+umi_filtered$cluster <- droplevels(factor(umi_filtered$cluster))
+SingleCellExperiment::colLabels(umi_filtered) <- umi_filtered$cluster
+
+
+if (!"logcounts" %in% assayNames(umi_filtered)) {
+  umi_filtered <- scuttle::logNormCounts(umi_filtered)
+}
+
+# donor-aware if possible; otherwise fall back
+blk <- droplevels(factor(umi_filtered$individual))
+sm <- if (nlevels(blk) >= 2) {
+  scran::scoreMarkers(umi_filtered, block = blk, assay.type = "logcounts")
+} else {
+  scran::scoreMarkers(umi_filtered, assay.type = "logcounts")
+}
+
+
+
+
+
+
+
 ```
 
 
@@ -276,7 +316,20 @@ cbind(
 
 
 ```{r}
+colLabels(umi_mnn) <- factor(cl)
 
+# robust name-matched transfer -> avoids order issues
+labs <- colLabels(umi_mnn)
+names(labs) <- colnames(umi_mnn)
+
+idx <- match(colnames(umi_filtered), names(labs))
+cat("Unmatched cells:", sum(is.na(idx)), "of", length(idx), "\n")
+stopifnot(all(!is.na(idx)))  # fail fast if some cells are missing
+
+umi_filtered$cluster <- labs[idx]
+umi_filtered$cluster <- droplevels(factor(umi_filtered$cluster))
+
+table(umi_filtered$cluster)   # sh
 ```
 
 ```{r}

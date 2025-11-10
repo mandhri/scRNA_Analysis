@@ -88,9 +88,9 @@ We'll read in the matrix and the per-cell annotation.
 molecules: A tab-delimited file containing the count (UMI) matrix. Rows correspond to genes; columns correspond to cells.
 
 ```{r load_data}
-molecules <- read.table("/mnt/vol1/scRNA_playground/resources/DATASETS/Datasets/tung/molecules.txt", sep = "\t")
-anno <- read.table("/mnt/vol1/scRNA_playground/resources/DATASETS/Datasets/tung/annotation.txt", sep = "\t", header = TRUE)
-reads <- read.table("/mnt/vol1/scRNA_playground/resources/DATASETS/Datasets/tung/reads.txt", header = TRUE, stringsAsFactors = FALSE)
+molecules <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/molecules.txt", sep = "\t")
+anno <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/annotation.txt", sep = "\t", header = TRUE)
+reads <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/reads.txt", header = TRUE, stringsAsFactors = FALSE)
 
 ```
 
@@ -128,7 +128,6 @@ umi <- SingleCellExperiment(
 umi
 head(assays(umi)$counts[,1:3])
 head(colData(umi)[,1:3])
-
 
 ```
 
@@ -170,8 +169,6 @@ Therefore;
 
 ```{r exprs-qc4}
 
-altExp(umi,"ERCC") <- umi[grep("^ERCC-",rownames(umi)), ]
-
 # Identify ERCC rows
 
 is_ercc <- grepl("^ERCC-", rownames(umi))
@@ -185,16 +182,6 @@ table(colSums(counts(altExp(umi,"ERCC"))) > 0)
 # Remove ERCCs from the main assay that is to be analyse
 umi <- umi[!is_ercc, , drop = FALSE]
  
-
-umi <- umi[!is_ercc, , drop=FALSE]
-rowData(umi)$is_mito <- grepl("^MT-", rownames(umi))    
-colData(umi)$nUMI    <- colSums(counts(umi))
-colData(umi)$nGene   <- Matrix::colSums(counts(umi) > 0)
-
-# Simple filter (tune thresholds)
-keep <- colData(umi)$pct_ERCC < 10 & colData(umi)$nUMI > 500 & colData(umi)$nGene > 200
-umi  <- umi[, keep, drop=FALSE]
-
 ```
 
 ## Map ENSEMBL IDs to gene symbols
@@ -202,9 +189,9 @@ umi  <- umi[, keep, drop=FALSE]
 Now, let's map ENSEMBL IDs to gene symbols. From the `table` command, we can see that most genes were annotated; however, 846 returned "NA" from a total of 18,637. 
 
 ```{r exprs-qc4b}
-gene_names <- mapIds(org.Hs.eg.db, keys=rownames(umi), keytype="ENSEMBL", columns="SYMBOL",column="SYMBOL")
-gene_names[1:4]
-rowData(umi)$SYMBOL <- gene_names
+gene_names <- mapIds(org.Hs.eg.db, keys=rownames(umi), keytype="ENSEMBL", columns="SYMBOL",column="SYMBOL") 
+gene_names[1:4] 
+rowData(umi)$SYMBOL<- gene_names
 table(is.na(gene_names))
 
 ```

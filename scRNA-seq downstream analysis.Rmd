@@ -280,26 +280,41 @@ Find up-regulated markers with empirical Bayes shrinkage.
 
 ```{r exprs-qc4b}
 
-umi_filtered$cluster <- colLabels(umi_mnn)[colnames(umi_filtered)]
-umi_filtered$cluster <- droplevels(factor(umi_filtered$cluster))
-SingleCellExperiment::colLabels(umi_filtered) <- umi_filtered$cluster
+umi_filtered <- umi_filtered[, colnames(umi_mnn)]
 
+labs <- setNames(colLabels(umi_mnn), colnames(umi_mnn))
+umi_filtered$cluster <- factor(labs[colnames(umi_filtered)])
 
-if (!"logcounts" %in% assayNames(umi_filtered)) {
-  umi_filtered <- scuttle::logNormCounts(umi_filtered)
+sm <-scran::scoreMarkers(umi_filtered, groups = umi_filtered$cluster, assay.type = "logcounts")
+
+names(sm)                 # e.g. "1" "2" "3" "4"
+cl <- names(sm)[1]        # pick a cluster to inspect
+colnames(sm[[cl]])      
+
+cl <- "3" # pick a cluster
+df <- as.data.frame(sm[[cl]])
+df$gene <- rownames(df)
+head(df[order(df$mean.AUC, decreasing=TRUE),
+        c("gene","mean.AUC","mean.logFC.cohen","self.average","other.average")], 10)
+
+outdir <- "/mnt/vol1/scRNA_Analysis/markers"
+dir.create(outdir, showWarnings = FALSE)
+
+for (cl in names(sm)) {
+  d <- as.data.frame(sm[[cl]])
+  d$gene <- rownames(d)
+  d <- d[order(d$mean.AUC, decreasing=TRUE), ]
+  write.csv(d, file.path(outdir, paste0("markers_cluster_", cl, ".csv")), row.names=FALSE)
 }
 
-# donor-aware if possible; otherwise fall back
-blk <- droplevels(factor(umi_filtered$individual))
-sm <- if (nlevels(blk) >= 2) {
-  scran::scoreMarkers(umi_filtered, block = blk, assay.type = "logcounts")
-} else {
-  scran::scoreMarkers(umi_filtered, assay.type = "logcounts")
-}
+top_feats <- unique(unlist(lapply(sm, function(d) {
+  rn <- rownames(d); rn[order(d$mean.AUC, decreasing=TRUE)][1:5]
+})))
 
-
-
-
+scater::plotHeatmap(umi_filtered,
+                    features = top_feats,
+                    colour_columns_by = "cluster",
+                    exprs_values = "logcounts")
 
 
 
@@ -423,7 +438,7 @@ table(umi_filtered$cluster)   # sh
 
 
 ```{r exprs-qc17}
-
+table(umi_filtered$cluster) 
 ```
 
 

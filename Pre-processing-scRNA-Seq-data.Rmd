@@ -90,6 +90,7 @@ molecules: A tab-delimited file containing the count (UMI) matrix. Rows correspo
 ```{r load_data}
 molecules <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/molecules.txt", sep = "\t")
 anno <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/annotation.txt", sep = "\t", header = TRUE)
+
 reads <- read.table("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/reads.txt", header = TRUE, stringsAsFactors = FALSE)
 
 ```
@@ -141,7 +142,7 @@ Remove the genes that are not expressed in any cell. As you can see, earlier it 
   umi<- umi[keep_features,]
 ```
 
-# Cleaning the single cell experiment
+# Cleaning the single cell experimentw
 
 ERCC spike-ins are synthetic RNA molecules added to samples to measure technical variation.
 Defined control features(genes)- ERCC spike-ins and mitochondrial genes: https://jdblischak.github.io/singleCellSeq/analysis/ 
@@ -189,7 +190,13 @@ umi <- umi[!is_ercc, , drop = FALSE]
 Now, let's map ENSEMBL IDs to gene symbols. From the `table` command, we can see that most genes were annotated; however, 846 returned "NA" from a total of 18,637. 
 
 ```{r exprs-qc4b}
-gene_names <- mapIds(org.Hs.eg.db, keys=rownames(umi), keytype="ENSEMBL", columns="SYMBOL",column="SYMBOL") 
+gene_names <- AnnotationDbi::mapIds(
+  org.Hs.eg.db,
+  keys      = rownames(umi),
+  keytype   = "ENSEMBL",
+  column    = "SYMBOL",
+  multiVals = "first"
+)
 gene_names[1:4] 
 rowData(umi)$SYMBOL<- gene_names
 table(is.na(gene_names))
@@ -306,7 +313,7 @@ The percentage (or sometimes absolute number) of cells in which that gene had a 
 
 For example, if detected = 84.26, that typically means ~84% of cells expressed this gene above the detection threshold.
 
-# STEP8: Calculate Per-Cell and Per-Feature QC Metrics
+# STEp 8: Calculate Per-Cell and Per-Feature QC Metrics
 
 
 ```{r exprs-qc6}
@@ -488,7 +495,13 @@ assay(umi, "logcounts_raw") <- log2(counts(umi) + 1)
 Finally, let's save the `SingleCellExperiment` object with all the fields we have added to the per-cell metadata, and new assays (`logcounts_raw`):
 
 ```{r exprs-qc17}
-saveRDS(umi, file = "/mnt/vol1/scRNA_playground/ScRNA_playground_data/Datasets/tung/umi.rds")
+# Add donor & replicate as factors (from your anno columns)
+umi$donor     <- factor(umi$individual)
+umi$replicate <- factor(umi$replicate)
+
+# Quick check
+summary(umi$donor); summary(umi$replicate)
+saveRDS(umi, file = "/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/umi.rds")
 ```
 
 

@@ -16,7 +16,7 @@ This analysis extends our preprocessing workflow to demonstrate advanced single-
 # Load libraries
 
 ```{r LIBRARIES, message=FALSE, warning=FALSE}
-
+library(batchelor)
 library(readxl)
 library(tidyverse)
 library(metafor)
@@ -93,16 +93,13 @@ umi_filtered <- logNormCounts(umi_filtered)  # Creates "logcounts" assay
 
 ```
 
-###  Visual comparison of normalisation methods
+### Biological normalisation.
 
-
-#### Normalisation focused on individual-level differences.
-
-In this analysis, we are focusing on biological (3 biological groups) rather than technical batch effects (9 experimental batches), since for disease mechanism discovery, the biological signal between donors matters far more than technical noise patterns.
+In this step, we are focusing on biological (3 biological groups) rather than technical batch effects (9 experimental batches), since for disease mechanism discovery, the biological signal between donors matters.
 
 Let's compare how each method affects the data structure using PCA:
 
-Let's compare how each method affects the data structure using PCA:
+Results: As you can see, scran deconvolution + logNormCounts was the best performing method
 
 ```{r norm, message=FALSE, warning=FALSE}
 
@@ -134,34 +131,130 @@ combined <- plot_grid(
   align  = "hv"
 )
 ggsave("/mnt/vol1/scRNA_Analysis/pca_comparison.png", combined, width=12, height=4)
+
 ```
 
 
-#### Normalisation focused on technical batch effects (9 experimental batches)- Just to focus 
+#### Pick HVGs (block by replicate so we favour biology) 
+
+HVG-PCA = PCA run on Highly Variable Genes in single-cell RNA-seq.
+
+HVGs (Highly Variable Genes): genes whose expression varies more than expected across cells (after normalisation and mean–variance modelling). They tend to carry biological signal rather than technical noise.
+
+Why we do it:
+Reduces noise and computation (e.g., use top ~2,000 HVGs).
+Improves downstream clustering, batch assessment, and embeddings (UMAP/t-SNE fed from HVG-PCA PCs).
+
+RESULTS FROM PLOTS:
+
+Plot coloured by replicate now looks more mixed → that’s actually good for us: it means replicate (batch) is no longer the dominant axis in the HVG-PCA view you showed.
 
 ```{r norm_technical, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
 
+fit  <- modelGeneVar(umi_filtered, block = umi_filtered$replicate)
+hvg  <- getTopHVGs(fit, n = 2000)
+
+# Diagnostic PCA BEFORE correction
+umi_filtered <- runPCA(umi_filtered, subset_row = hvg, name = "PCA_hvg_uncorrected")
+plotPCA(umi_filtered, dimred = "PCA_hvg_uncorrected", colour_by = "replicate")
+plotPCA(umi_filtered, dimred = "PCA_hvg_uncorrected", colour_by = "individual")
+
 ```
-
-
-
-# PART 2: FEATURE SELECTION
-
+#### Batch-correct the embedding (fastMNN)
 
 ```{r SCE, message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
 
+# Batch factor: replicate within donor
+b <- interaction(umi_filtered$individual, umi_filtered$replicate, drop = TRUE)
+
+# Merge replicates of the same donor
+
+levs <- levels(b)
+donor_of_level <- sub("\\.r[0-9]+$", "", levs)
+merge_order <- unname(split(seq_along(levs), donor_of_level))
+
+umi_mnn <- fastMNN(
+  umi_filtered,
+  subset.row = hvg,
+  batch      = b,
+  merge.order= merge_order,
+  k = 50
+)
+
+
+
+keep <- intersect(c("individual","replicate","subsets_Mito_percent","altexps_ERCC_percent"),
+                  colnames(colData(umi_filtered)))
+colData(umi_mnn)[, keep] <- colData(umi_filtered)[colnames(umi_mnn), keep, drop=FALSE]
+
+# UMAP on the MNN-corrected PCs
+umi_mnn <- runUMAP(umi_mnn, dimred = "corrected")
+
+plotReducedDim(umi_mnn, "UMAP", colour_by="replicate")   
+plotReducedDim(umi_mnn, "UMAP", colour_by="individual")  
+
+
+
+
+
 ```
 
+# Quick diagnostics (decide if you over-corrected)
+
+By replicate: points should be mixed (we have this).
+
+By individual: there’s no requirement to see separation. If donors are similar, they’ll mix. That’s fine. We protect donor effects later in DE by including donor in the model.
+
+
+Result:
+
+* Before correction (uncorrected PCA)
+
+** PC1 R2_ind_before = 0.875, PC2 = 0.867 → the first two PCs were almost entirely donor-driven (strong biological donor structure).
+
+** PC4 R2_rep_before = 0.692 (and some 0.18–0.27 on other PCs) → replicate/batch also contributed, especially PC4.
+
+* After MNN correction (corrected PCs)
+
+** R2_rep_after ≈ 0 on all PCs → batch/replicate signal was effectively removed (this is exactly what we want).
+
+** R2_ind_after ≈ 0.18–0.23 on PC1–PC2 → some donor structure remains, but it’s much weaker than before (0.87 → ~0.2).
+
+Small negative adjusted R² values are just ~0 (noise).
+
+
+Bottom line
+
+* Batch is successfully corrected. 
+
+* Donor differences are much smaller in the embedding (could be true biology being modest, or some attenuation from correction). That’s fine: you don’t need clear donor islands in UMAP/PCA to do valid downstream analysis. You’ll model donor explicitly for DE.
 
 
 ```{r}
 
+pcs_before <- reducedDim(umi_filtered, "PCA_hvg_uncorrected")[,1:20,drop=FALSE]
+pcs_after  <- reducedDim(umi_mnn, "corrected")[,1:20,drop=FALSE]
+
+adjR2 <- function(M, v) apply(M, 2, function(pc) summary(lm(pc ~ v))$adj.r.squared)
+
+cbind(
+  PC = 1:10,
+  R2_rep_before = round(adjR2(pcs_before, umi_filtered$replicate)[1:10], 3),
+  R2_ind_before = round(adjR2(pcs_before, umi_filtered$individual)[1:10], 3),
+  R2_rep_after  = round(adjR2(pcs_after , umi_mnn$replicate)[1:10], 3),
+  R2_ind_after  = round(adjR2(pcs_after , umi_mnn$individual)[1:10], 3)
+)
+
+
 ```
 
 
-
+# clustering on the corrected embedding
 
 ```{r exprs-qc4}
+
+
+
 
 
 ```

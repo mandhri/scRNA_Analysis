@@ -42,6 +42,9 @@ library(SingleR)
 library(celldex)
 library(singscore)
 
+library(msigdbr)
+library(singscore)
+library(scater)
 
 ```
 
@@ -453,124 +456,88 @@ sum(mat)
 ```{r}
 
 
-gs <- msigdbr(species = "Homo sapiens", category = "H") |> 
-      split(~ gs_name, ~ gene_symbol)
+# 1) Grab all sets, then keep Hallmarks by name
+msig_all <- msigdbr(species = "Homo sapiens")
+hall <- msig_all[grepl("^HALLMARK_", msig_all$gs_name), c("gs_name","gene_symbol")]
+hall_list <- split(hall$gene_symbol, hall$gs_name)
 
-# average logcounts per cluster
-A <- scuttle::sumCountsAcrossCells(umi_filtered, ids = umi_filtered$cluster, average = TRUE)
-lc_avg <- assay(A, "sum")  # actually means
-gsva_scores <- gsva(lc_avg, gs, method = "gsva")  # pathways x clusters
+length(hall_list) 
 
+# 2) Make SYMBOL-based SCE (if needed)
+syms <- rowData(umi_filtered)$SYMBOL
+ok   <- !is.na(syms)
+sce_sym <- umi_filtered[ok, ]
+rownames(sce_sym) <- syms[ok]
+if (!"logcounts" %in% assayNames(sce_sym)) sce_sym <- scuttle::logNormCounts(sce_sym)
 
+# 3) Score one pathway and plot on UMAP
 
-```
+set_name <- "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION"
+geneset  <- intersect(unique(hall_list[[set_name]]), rownames(sce_sym))
+stopifnot(length(geneset) >= 10)
 
-## fgsea on ranked pseudo-bulk stats
+# 1) compute a singscore (version-proof)
+expr <- assay(sce_sym, "logcounts")
+rnk  <- singscore::rankGenes(expr)
+sc   <- singscore::simpleScore(rnk, upSet = geneset)
 
-```{r}
+# 2) extract the score and NAME it with cell barcodes
+score <- if (!is.null(sc$TotalScore)) sc$TotalScore else sc$totalScore
+names(score) <- colnames(sce_sym)             # <-- critical
 
-ranks <- de_c3_vs_c1$logFC; names(ranks) <- rownames(de_c3_vs_c1)
-fg <- fgsea(pathways = gs, stats = ranks, minSize = 10, maxSize = 500)
-fg <- fg[order(fg$padj, -abs(fg$NES)), ]
-head(fg[, c("pathway","NES","padj")], 10)
-
-```
-
-
-# Cell-cycle scoring (sanity check of confounders)
-
-```{r exprs-qc5}
-
-cc <- scran::cyclone(umi_filtered, pairs = scran::hs.pairs)
-umi_filtered$G1   <- cc$scores$G1
-umi_filtered$S    <- cc$scores$S
-umi_filtered$G2M  <- cc$scores$G2M
-scater::plotReducedDim(umi_mnn, "UMAP", colour_by = I(umi_filtered$S[colnames(umi_mnn)]))
-
-saveRDS(umi_filtered, "/mnt/vol1/scRNA_Analysis/objects/umi_filtered_final.rds")
-saveRDS(umi_mnn,      "/mnt/vol1/scRNA_Analysis/objects/umi_mnn_final.rds")
-
-```
+# 3) transfer to the MNN object by name and plot
+umi_mnn[[set_name]] <- score[match(colnames(umi_mnn), names(score))]
+sum(is.na(umi_mnn[[set_name]]))               # should be 0
+scater::plotReducedDim(umi_mnn, "UMAP", colour_by = set_name)
 
 
-```{r exprs-qc6}
+# make sure rows are cell IDs and align to umi_mnn
+rownames(scores) <- colnames(umi_filtered)            # if not already
+scores <- scores[colnames(umi_mnn), , drop=FALSE]
+
+# add each pathway score into umi_mnn colData
+for(nm in colnames(scores)) umi_mnn[[nm]] <- scores[[nm]]
+
+# quick sanity plot for one set (pick any column name)
+scater::plotReducedDim(umi_mnn, "UMAP",
+                       colour_by = "HALLMARK_G2M_CHECKPOINT")
+
 
 ```
 
 
 ```{r exprs-qc6b}
+library(msigdbr)
+library(dplyr)      
+library(singscore)
 
-```
+# Hallmarks table → keep only set name + gene symbol
+hall <- msigdbr::msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::select(gs_name, gene_symbol)
 
+# As a list for scoring
+hall_list <- split(hall$gene_symbol, hall$gs_name)
 
+# Prepare expression in SYMBOL space
+sym <- rowData(umi_filtered)$SYMBOL
+ok  <- !is.na(sym) & sym != ""
+sce_sym <- umi_filtered[ok, ]
+rownames(sce_sym) <- sym[ok]
 
-```{r exprs-qc7}
+# Rank once
+rnk <- singscore::rankGenes(assay(sce_sym, "logcounts"))
 
-```
+# Score ALL Hallmarks per cell (simple, robust)
+scores <- vapply(hall_list, function(gs){
+  gs <- intersect(gs, rownames(sce_sym))
+  if (length(gs) < 5) return(rep(NA_real_, ncol(sce_sym)))
+  singscore::simpleScore(rnk, upSet = gs)$TotalScore
+}, numeric(ncol(sce_sym)))
 
-```{r exprs-qc8}
-
-```
-
-
-
-```{r exprs-qc9}
-
-```
-
-
-
-```{r exprs-qc10}
-
-```
-
-
-
-```{r exprs-qc11}
-
-```
-
-
-
-```{r exprs-qc12}
+scores <- as.data.frame(scores)
 
 
 ```
-
-
-
-```{r exprs-qc13}
-
-```
-
-
-
-```{r exprs-qc14}
-
-```
-
-
-```{r exprs-qc15}
-
-``` 
-
-
-```{r exprs-qc16}
-
-```
-
-
-
-```{r exprs-qc17}
-
-```
-
-
-```{r exprs-qc17}
-
-```
-
-
 ### sessionInfo()
 
 

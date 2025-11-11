@@ -35,12 +35,13 @@ library(scran)
 library(igraph)
 library(scDblFinder)
 library(fgsea)
-library(GSVA)
 library(msigdbr)
 library(scuttle)
 library(edgeR)
 library(SingleR)
-librarlibrary(scDblFinder)y(celldex)
+library(celldex)
+library(singscore)
+
 
 ```
 
@@ -339,38 +340,108 @@ umi_filtered <- umi_filtered[, umi_filtered$doublet == "singlet"]
 
 # cluster labels (reference-based)
 
+SingleR compares each cell’s expression to reference profiles and gives a coarse cell type.
+
+umi_mnn holds the embedding; adding labels there lets you colour the UMAP easily. “Pruned” = NA if ambiguous.
 
 
 ```{r}
+# same cell order between objects (important before any joins)
+umi_filtered <- umi_filtered[, colnames(umi_mnn)]
 
-ref <- HumanPrimaryCellAtlasData()
-pred <- SingleR(test = umi_filtered, ref = ref, labels = ref$label.main)
-umi_filtered$label <- pred$labels
-scater::plotReducedDim(umi_mnn, "UMAP", colour_by = I(umi_filtered$label[colnames(umi_mnn)]))
+# make sure test genes match the reference style (Ensembl, no versions)
+rownames(umi_filtered) <- sub("\\.\\d+$", "", rownames(umi_filtered))
+
+
+# put Bioc caches in your folder
+cache <- "/mnt/vol1/scRNA_Analysis/bioc_cache"
+dir.create(cache, recursive=TRUE, showWarnings=FALSE)
+Sys.setenv(ANNOTATIONHUB_CACHE=cache, EXPERIMENT_HUB_CACHE=cache,
+           BIOCFILECACHE_CACHE=cache, XDG_CACHE_HOME=cache)
+options(AnnotationHub.ask=FALSE, ExperimentHub.ask=FALSE)
+
+# run SingleR using Blueprint (Ensembl-based)
+ref  <- celldex::BlueprintEncodeData(ensembl=TRUE)
+pred <- SingleR(test=umi_filtered, ref=ref, labels=ref$label.main)
+
+umi_mnn$ref_label         <- setNames(pred$labels,         colnames(umi_filtered))[colnames(umi_mnn)]
+scater::plotReducedDim(umi_mnn, "UMAP", colour_by="ref_label")
 
 ```
 
 # Pseudo-bulk DE (donor + batch in the model)
 
 ```{r}
-# keep clusters from your corrected embedding
-umi_filtered$cluster <- colLabels(umi_mnn)[colnames(umi_filtered)]
+umi_filtered <- umi_filtered[, colnames(umi_mnn), drop = FALSE]
 
-pb <- aggregateAcrossCells(
-  umi_filtered,
-  ids = DataFrame(cluster = umi_filtered$cluster,
-                  donor   = umi_filtered$individual,
-                  batch   = umi_filtered$replicate)
+# 1) Put cluster labels onto umi_filtered (name-matched)
+labs <- SingleCellExperiment::colLabels(umi_mnn)
+names(labs) <- colnames(umi_mnn)
+umi_filtered$cluster <- factor(labs[colnames(umi_filtered)])
+
+# 2) Drop cells with missing cluster or donor
+keep <- !is.na(umi_filtered$cluster) & !is.na(umi_filtered$individual)
+umi_pb <- umi_filtered[, keep]
+stopifnot(ncol(umi_pb) > 0)
+
+# 3) Aggregate per donor × cluster (older scuttle: no 'use.assay')
+ids <- S4Vectors::DataFrame(
+  donor   = droplevels(factor(umi_pb$individual)),
+  cluster = droplevels(factor(umi_pb$cluster))
 )
+pb <- scuttle::aggregateAcrossCells(umi_pb, ids = ids)
 
-y <- DGEList(counts(assay(pb, "counts"))); y <- calcNormFactors(y)
-design <- model.matrix(~ 0 + pb$cluster + pb$donor + pb$batch)
-colnames(design) <- make.names(colnames(design))
-y <- estimateDisp(y, design); fit <- glmQLFit(y, design)
+# 4) Sanity checks
+assayNames(pb)                 # should show "counts"
+dim(assay(pb, "counts"))       # genes x pseudo-bulk samples (columns > 0)
+table(pb$cluster, pb$donor)    # at least one cluster has ≥2 donors
+colSums(assay(pb, "counts"))[1:5]
 
-# Example: cluster 3 vs 1 (adjusted for donor+batch)
-con <- makeContrasts(cluster.3 - cluster.1, levels = design)
-de_c3_vs_c1 <- topTags(glmQLFTest(fit, contrast = con), n = Inf)$table
+## 1) Re-aggregate with replication
+ids <- DataFrame(
+  donor    = droplevels(factor(umi_filtered$individual)),
+  replicate= droplevels(factor(umi_filtered$replicate)),
+  cluster  = droplevels(factor(umi_filtered$cluster))
+)
+pb <- aggregateAcrossCells(umi_filtered, ids = ids)  # defaults to "counts"
+
+## 2) Pick a cluster that exists in ≥2 donors (and has >1 sample total)
+tab <- with(colData(pb), table(cluster, donor))
+ok_clusters <- rownames(tab)[rowSums(tab > 0) >= 2]
+stopifnot(length(ok_clusters) > 0)
+clu <- ok_clusters[1]
+
+keep <- pb$cluster == clu
+mat  <- assay(pb, "counts")[, keep, drop = FALSE]
+grp  <- droplevels(pb$donor[keep])           # group = donor (what we want to compare)
+
+## Sanity: need replication overall and ≥2 donor levels
+stopifnot(ncol(mat) >= 3, nlevels(grp) >= 2)
+
+## 3) edgeR minimal DE
+y <- DGEList(mat)
+y <- calcNormFactors(y)
+
+design <- model.matrix(~ 0 + grp)            # one column per donor
+colnames(design) <- sub("^grp", "", colnames(design))
+
+keepg <- filterByExpr(y, design = design)
+y <- y[keepg, , keep.lib.sizes = FALSE]
+
+y <- estimateDisp(y, design)                  # now residual df > 0
+fit <- glmQLFit(y, design)
+
+## 4) Contrast two donors actually present (edit names as shown by colnames(design))
+colnames(design)          # e.g. "NA19098" "NA19101" "NA19239"
+cn <- makeContrasts(NA19098 - NA19101, levels = design)
+
+tt <- glmQLFTest(fit, contrast = cn)
+topTags(tt)
+
+dim(mat)                 # columns = samples (should be > p = #donors)
+table(grp)               # at least 2 donors, preferably multiple samples each
+sum(mat) 
+
 
 ```
 

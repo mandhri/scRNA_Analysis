@@ -299,61 +299,52 @@ chi_sq <- chisq.test(design_table)
 print(chi_sq)
 
 
-# Check variance explained in detail
-pcs_after <- reducedDim(umi_mnn, "corrected")[, 1:20]
-r2_ind <- sapply(1:20, function(i) {
-  summary(lm(pcs_after[, i] ~ umi_mnn$individual))$adj.r.squared
-})
-
-cat("\nIndividual variance explained per PC:\n")
-print(round(r2_ind, 3))
-
-
-# Calculate R2 before and after correction
-pcs_before <- reducedDim(umi_filtered, "PCA_hvg_uncorrected")[, 1:20, drop = FALSE]
-pcs_after  <- reducedDim(umi_mnn, "corrected")[, 1:20, drop = FALSE]
-
-# Function to calculate adjusted R²
-calc_adjR2 <- function(pcs_matrix, factor_variable) {
-  apply(pcs_matrix, 2, function(pc) {
-    summary(lm(pc ~ factor_variable))$adj.r.squared
-  })
-}
-
-# Calculate for replicates and individuals
-r2_rep_before <- calc_adjR2(pcs_before, umi_filtered$replicate)
-r2_ind_before <- calc_adjR2(pcs_before, umi_filtered$individual)
-r2_rep_after  <- calc_adjR2(pcs_after, umi_mnn$replicate)
-r2_ind_after  <- calc_adjR2(pcs_after, umi_mnn$individual)
-
-# Create results table
-r2_table <- data.frame(
-  PC = 1:10,
-  R2_replicate_BEFORE = round(r2_rep_before[1:10], 3),
-  R2_individual_BEFORE = round(r2_ind_before[1:10], 3),
-  R2_replicate_AFTER = round(r2_rep_after[1:10], 3),
-  R2_individual_AFTER = round(r2_ind_after[1:10], 3)
-)
-
-# Summary stats
-
-cat("BEFORE correction:\n")
-cat("  Max R² for replicate:", round(max(r2_rep_before[1:10]), 3), "\n")
-cat("  Max R² for individual:", round(max(r2_ind_before[1:10]), 3), "\n")
-
-cat("\nAFTER correction:\n")
-cat("  Max R² for replicate:", round(max(r2_rep_after[1:10]), 3), "\n")
-cat("  Max R² for individual:", round(max(r2_ind_after[1:10]), 3), "\n")
 ```
-**Interpretation:**
-- Replicates now **mix well** = batch effects removed
-- Individuals show less visible in the UMAP 
+
+**Result:** Significant (p < 0.001) indicating partial confounding
+
+- NA19101: well-balanced (84/75/72 across replicates)
+- NA19239: well-balanced (94/81/88 across replicates)  
+- NA19098: imbalanced (90/2/84 - missing from replicate 2)
+
+Chi-square test: p = 9.215e-14 (significant)
+
+**Decision:** Proceed with fastMNN but validate that biological signal is preserved
 
 ## 4.3 Quantify Correction Quality
 
-Calculate variance explained (R²) before and after correction:
+Calculate variance explained (R²) before and after correction to check whether fastMNN preserved biological signal 
 
 ```{r correction_metrics}
+
+# Apply fastMNN
+umi_mnn <- fastMNN(
+  umi_filtered,
+  subset.row = hvg,
+  batch = umi_filtered$replicate,
+  k = 50
+)
+
+
+# Transfer metadata
+keep_cols <- c("individual", "replicate", "subsets_Mito_percent", "altexps_ERCC_percent")
+keep_cols <- intersect(keep_cols, colnames(colData(umi_filtered)))
+colData(umi_mnn)[, keep_cols] <- colData(umi_filtered)[colnames(umi_mnn), keep_cols, drop = FALSE]
+
+# UMAP on corrected data
+umi_mnn <- runUMAP(umi_mnn, dimred = "corrected")
+
+# Visualise results
+p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "replicate") +
+  ggtitle("After Correction: Coloured by Replicate") +
+  theme_minimal()
+
+p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "individual") +
+  ggtitle("After Correction: Coloured by Individual") +
+  theme_minimal()
+
+p1 + p2
+
 # Extract PCs before and after
 pcs_before <- reducedDim(umi_filtered, "PCA_hvg_uncorrected")[, 1:10, drop = FALSE]
 pcs_after <- reducedDim(umi_mnn, "corrected")[, 1:10, drop = FALSE]
@@ -374,17 +365,29 @@ metrics <- data.frame(
   R2_individual_after = round(calc_adjR2(pcs_after, umi_mnn$individual), 3)
 )
 
-print(metrics)
+cat("BEFORE correction:\n")
+cat("  Max R² for replicate:", round(max(r2_rep_before[1:10]), 3), "\n")
+cat("  Max R² for individual:", round(max(r2_ind_before[1:10]), 3), "\n")
+
+cat("\nAFTER correction:\n")
+cat("  Max R² for replicate:", round(max(r2_rep_after[1:10]), 3), "\n")
+cat("  Max R² for individual:", round(max(r2_ind_after[1:10]), 3), "\n")
+
 ```
 
-**Key Metrics:**
+**Validation Results:**
+
 - **R² replicate (before):** 0.69 → strong batch effects
 - **R² replicate (after):** ~0.02 → batch effects removed
 - **R² individual (before):** 0.88 → strong donor signal
 - **R² individual (after):** ~0.23 → moderate donor signal retained
 
-**Conclusion:** Excellent correction - removed technical variation while preserving biological variation
+**Interpretation:** Despite partial confounding, fastMNN successfully:
+1. Removed technical batch effects
+2. Preserved genuine biological differences between individuals
+3. The remaining individual R² (0.233) represents true biological variation
 
+**This validates that fastMNN is appropriate for this dataset.**
 ---
 
 # 5. Clustering and Cell Type Identification
@@ -399,10 +402,9 @@ snn_graph <- buildSNNGraph(umi_mnn, use.dimred = "corrected", k = 20)
 clusters <- igraph::cluster_walktrap(snn_graph)$membership
 colLabels(umi_mnn) <- factor(clusters)
 
-cat("Cluster sizes:\n")
 print(table(colLabels(umi_mnn)))
 
-# Visualize clusters
+# Visualise clusters
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
   ggtitle("Clusters") +
   theme_minimal() +
@@ -425,7 +427,7 @@ ggsave(file.path(outdir, "clustering_overview.png"), combined,
 
 **Observation:** 
 - Identified **`r length(unique(clusters))`** distinct clusters
-- No strong mitochondrial gradient → good quality control
+- No strong mitochondrial gradient = good quality control
 - Clusters show some individual enrichment
 
 ## 5.2 Marker Gene Discovery

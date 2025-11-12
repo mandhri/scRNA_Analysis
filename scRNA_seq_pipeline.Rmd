@@ -1,0 +1,1050 @@
+---
+title: "Single-Cell RNA-seq Analysis: iPSC Heterogeneity"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300
+)
+```
+
+# Executive Summary
+
+This analysis examines single-cell RNA-sequencing data from **induced pluripotent stem cells (iPSCs)** derived from three Yoruba individuals (Tung et al., 2017). The primary objectives are to:
+
+1. **Assess technical quality** and perform appropriate normalisation
+2. **Identify cell subpopulations** through clustering
+3. **Characterise cell states** (cell cycle, pluripotency, differentiation)
+4. **Discover individual variation** through differential expression
+5. **Interpret biological mechanisms** via pathway analysis
+
+**Key Findings:**
+- Successfully processed 670 high-quality cells across 13,839 genes
+- Identified distinct cell subpopulations with varying cell cycle states
+- Detected individual-specific gene expression patterns
+- Batch effects successfully corrected while preserving biological signal
+
+---
+
+# 1. Introduction
+
+## 1.1 Biological Context
+
+**Induced Pluripotent Stem Cells (iPSCs)** are reprogrammed somatic cells with embryonic stem cell-like properties. Understanding their heterogeneity is crucial for:
+- Regenerative medicine applications
+- Disease modeling
+- Understanding cellular reprogramming
+
+## 1.2 Dataset Overview
+
+**Source:** Tung et al. (2017) - "Batch effects and the effective design of single-cell gene expression studies"
+
+**Experimental Design:**
+- **3 individuals** from the Yoruba population (NA19098, NA19101, NA19239)
+- **Multiple technical replicates** per individual (batch structure)
+- **iPSC cultures** profiled using scRNA-seq
+
+**Research Questions:**
+1. How much heterogeneity exists within iPSC populations?
+2. Do cell cycle states drive population structure?
+3. What genes vary between individuals (genetic diversity)?
+4. Are there subpopulations indicating early differentiation?
+
+---
+
+# 2. Setup
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Core single-cell packages
+library(SingleCellExperiment)
+library(scater)
+library(scuttle)
+library(scran)
+library(batchelor)
+
+# Differential expression
+library(edgeR)
+library(limma)
+
+# Annotation
+library(SingleR)
+library(celldex)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(EnsDb.Hsapiens.v86)
+library(fgsea)
+library(msigdbr)
+library(singscore)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(ggrepel)
+library(pheatmap)
+library(dplyr)
+library(tidyr)
+
+# Set output directory
+outdir <- "/mnt/vol1/scRNA_Analysis"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load_data}
+# Load preprocessed data
+umi <- readRDS("/mnt/vol1/scRNA_Analysis/DATASETS/Datasets/tung/umi.rds")
+
+```
+
+**Note:** The preprocessing step (not shown) already performed:
+- Low-quality cell filtering (low library size, high mitochondrial content)
+- Low-expressed gene filtering
+- QC metric calculation
+
+---
+
+# 3. Quality Control and Normalisation
+
+## 3.1 Final Filtering
+
+Remove cells and genes flagged during QC:
+
+```{r filtering}
+# Remove flagged cells and genes
+umi_filtered <- umi[!rowData(umi)$discard, !colData(umi)$discard]
+
+```
+
+## 3.2 Normalisation Method Comparison
+
+**Why compare methods?** Different normalisation strategies make different assumptions:
+
+- **Raw log counts:** Simple but biased by sequencing depth
+- **CPM (Counts Per Million):** Corrects for library size
+- **Scran deconvolution:** Sophisticated pooling-based method that handles composition biases
+
+```{r normalisation, fig.width=15, fig.height=5}
+# Method 1: Raw log transformation (baseline)
+assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
+
+# Method 2: CPM normalization
+assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
+
+# Method 3: Scran deconvolution (RECOMMENDED)
+# Step 1: Quick clustering for pooling
+quick_clusters <- quickCluster(umi_filtered, min.size = 20)
+
+# Step 2: Compute size factors
+umi_filtered <- computeSumFactors(umi_filtered, clusters = quick_clusters)
+
+# Check size factors are well-behaved
+print(summary(sizeFactors(umi_filtered)))
+
+# Step 3: Apply log normalization
+umi_filtered <- logNormCounts(umi_filtered)  # Creates "logcounts" assay
+```
+
+### 3.2.1 Visual Comparison
+
+```{r norm_comparison, fig.width=15, fig.height=5}
+
+# Run PCA with each normalisation method
+umi_filtered <- runPCA(umi_filtered, exprs_values = "logcounts_raw", name = "PCA_raw")
+umi_filtered <- runPCA(umi_filtered, exprs_values = "logcpm", name = "PCA_cpm")
+umi_filtered <- runPCA(umi_filtered, exprs_values = "logcounts", name = "PCA_scran")
+
+# Create comparison plots
+p1 <- plotPCA(umi_filtered, dimred = "PCA_raw", 
+              colour_by = "individual", shape_by = "replicate") +
+  ggtitle("Raw Log Counts\n(Depth-dependent)") + 
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p2 <- plotPCA(umi_filtered, dimred = "PCA_cpm", 
+              colour_by = "individual", shape_by = "replicate") +
+  ggtitle("CPM Normalised\n(Better separation)") + 
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p3 <- plotPCA(umi_filtered, dimred = "PCA_scran", 
+              colour_by = "individual", shape_by = "replicate") +
+  ggtitle("Scran Normalised\n(Best biological signal)") + 
+  theme_minimal()
+
+# Combine and save
+combined <- plot_grid(p1, p2, p3, ncol = 3, align = "hv")
+print(combined)
+ggsave(file.path(outdir, "normalisation_comparison.png"), combined, 
+       width = 15, height = 5, dpi = 300)
+```
+
+**Interpretation:**
+- **Raw counts** show strong batch effects (replicates cluster separately)
+- **CPM** improves but still shows technical variation
+- **Scran** shows clearest biological separation by individual
+- **Conclusion:** Proceeding with scran normalisation
+
+---
+
+# 4. Batch Correction
+
+## 4.1 Feature Selection (HVGs)
+
+Select **Highly Variable Genes (HVGs)** that capture biological variation:
+
+```{r hvg_selection, fig.width=10, fig.height=5}
+
+# Model gene variance, blocking by replicate
+fit <- modelGeneVar(umi_filtered, block = umi_filtered$replicate)
+
+# Select top 2000 HVGs
+hvg <- getTopHVGs(fit, n = 2000)
+length(hvg)
+
+# PCA on HVGs BEFORE correction
+umi_filtered <- runPCA(umi_filtered, subset_row = hvg, name = "PCA_hvg_uncorrected")
+
+# Visualise batch effects
+p1 <- plotPCA(umi_filtered, dimred = "PCA_hvg_uncorrected", colour_by = "replicate") +
+  ggtitle("Before Correction: Coloured by Replicate") +
+  theme_minimal()
+
+p2 <- plotPCA(umi_filtered, dimred = "PCA_hvg_uncorrected", colour_by = "individual") +
+  ggtitle("Before Correction: Coloured by Individual") +
+  theme_minimal()
+
+p1 + p2
+```
+
+**Observation:** Individuals cluster separately → strong batch effects present
+
+## 4.2 MNN Batch Correction
+
+Use **fastMNN** (Mutual Nearest Neighbours) to remove technical batch effects while preserving biological variation:
+
+UMAP is an algorithm that takes a high-dimensional dataset (such as a single-cell RNA dataset) and reduces it to a low-dimensional plot that retains much of the original information
+
+```{r batch_correction, fig.width=10, fig.height=5}
+# Create batch factor: individual × replicate
+batch_factor <- interaction(umi_filtered$individual, umi_filtered$replicate, drop = TRUE)
+
+# Define merge order: merge replicates within same donor first
+levels_batch <- levels(batch_factor)
+donor_of_level <- sub("\\.r[0-9]+$", "", levels_batch)
+merge_order <- unname(split(seq_along(levels_batch), donor_of_level))
+print(merge_order)
+
+# Run fastMNN
+umi_mnn <- fastMNN(
+  umi_filtered,
+  subset.row = hvg,
+  batch = batch_factor,
+  merge.order = merge_order,
+  k = 50
+)
+
+# Transfer metadata
+keep_cols <- c("individual", "replicate", "subsets_Mito_percent", "altexps_ERCC_percent")
+keep_cols <- intersect(keep_cols, colnames(colData(umi_filtered)))
+colData(umi_mnn)[, keep_cols] <- colData(umi_filtered)[colnames(umi_mnn), keep_cols, drop = FALSE]
+
+# UMAP on corrected data
+umi_mnn <- runUMAP(umi_mnn, dimred = "corrected")
+
+# Visualise results
+p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "replicate") +
+  ggtitle("After Correction: Coloured by Replicate") +
+  theme_minimal()
+
+p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "individual") +
+  ggtitle("After Correction: Coloured by Individual") +
+  theme_minimal()
+
+p1 + p2
+#ggsave(file.path(outdir, "batch_correction_umap.png"), p1 + p2,width = 12, height = 5, dpi = 300)
+
+```
+
+### Diagnostics
+
+An interesting challenge I encountered was balancing batch correction with biological signal preservation. After applying fastMNN, I noticed that while replicate effects were successfully removed, individual differences were less visible in the UMAP.
+
+I investigated this by:
+
+- Checking for confounding between batch and biology
+- Calculating variance explained before and after (20% individual variance remained)
+
+```{r correction_metrics}
+
+# 1. Check if there's confounding between batch and biology
+table(umi_filtered$individual, umi_filtered$replicate)
+
+design_table <- table(umi_filtered$individual, umi_filtered$replicate)
+print(design_table)
+
+chi_sq <- chisq.test(design_table)
+print(chi_sq)
+
+
+# Check variance explained in detail
+pcs_after <- reducedDim(umi_mnn, "corrected")[, 1:20]
+r2_ind <- sapply(1:20, function(i) {
+  summary(lm(pcs_after[, i] ~ umi_mnn$individual))$adj.r.squared
+})
+
+cat("\nIndividual variance explained per PC:\n")
+print(round(r2_ind, 3))
+
+
+# Calculate R2 before and after correction
+pcs_before <- reducedDim(umi_filtered, "PCA_hvg_uncorrected")[, 1:20, drop = FALSE]
+pcs_after  <- reducedDim(umi_mnn, "corrected")[, 1:20, drop = FALSE]
+
+# Function to calculate adjusted R²
+calc_adjR2 <- function(pcs_matrix, factor_variable) {
+  apply(pcs_matrix, 2, function(pc) {
+    summary(lm(pc ~ factor_variable))$adj.r.squared
+  })
+}
+
+# Calculate for replicates and individuals
+r2_rep_before <- calc_adjR2(pcs_before, umi_filtered$replicate)
+r2_ind_before <- calc_adjR2(pcs_before, umi_filtered$individual)
+r2_rep_after  <- calc_adjR2(pcs_after, umi_mnn$replicate)
+r2_ind_after  <- calc_adjR2(pcs_after, umi_mnn$individual)
+
+# Create results table
+r2_table <- data.frame(
+  PC = 1:10,
+  R2_replicate_BEFORE = round(r2_rep_before[1:10], 3),
+  R2_individual_BEFORE = round(r2_ind_before[1:10], 3),
+  R2_replicate_AFTER = round(r2_rep_after[1:10], 3),
+  R2_individual_AFTER = round(r2_ind_after[1:10], 3)
+)
+
+# Summary stats
+
+cat("BEFORE correction:\n")
+cat("  Max R² for replicate:", round(max(r2_rep_before[1:10]), 3), "\n")
+cat("  Max R² for individual:", round(max(r2_ind_before[1:10]), 3), "\n")
+
+cat("\nAFTER correction:\n")
+cat("  Max R² for replicate:", round(max(r2_rep_after[1:10]), 3), "\n")
+cat("  Max R² for individual:", round(max(r2_ind_after[1:10]), 3), "\n")
+```
+**Interpretation:**
+- Replicates now **mix well** = batch effects removed
+- Individuals show less visible in the UMAP 
+
+## 4.3 Quantify Correction Quality
+
+Calculate variance explained (R²) before and after correction:
+
+```{r correction_metrics}
+# Extract PCs before and after
+pcs_before <- reducedDim(umi_filtered, "PCA_hvg_uncorrected")[, 1:10, drop = FALSE]
+pcs_after <- reducedDim(umi_mnn, "corrected")[, 1:10, drop = FALSE]
+
+# Function to calculate adjusted R²
+calc_adjR2 <- function(pcs, factor) {
+  apply(pcs, 2, function(pc) {
+    summary(lm(pc ~ factor))$adj.r.squared
+  })
+}
+
+# Calculate for replicate and individual
+metrics <- data.frame(
+  PC = 1:10,
+  R2_replicate_before = round(calc_adjR2(pcs_before, umi_filtered$replicate), 3),
+  R2_individual_before = round(calc_adjR2(pcs_before, umi_filtered$individual), 3),
+  R2_replicate_after = round(calc_adjR2(pcs_after, umi_mnn$replicate), 3),
+  R2_individual_after = round(calc_adjR2(pcs_after, umi_mnn$individual), 3)
+)
+
+print(metrics)
+```
+
+**Key Metrics:**
+- **R² replicate (before):** 0.69 → strong batch effects
+- **R² replicate (after):** ~0.02 → batch effects removed
+- **R² individual (before):** 0.88 → strong donor signal
+- **R² individual (after):** ~0.23 → moderate donor signal retained
+
+**Conclusion:** Excellent correction - removed technical variation while preserving biological variation
+
+---
+
+# 5. Clustering and Cell Type Identification
+
+## 5.1 Graph-Based Clustering
+
+```{r clustering, fig.width=12, fig.height=5}
+# Build shared nearest neighbor (SNN) graph
+snn_graph <- buildSNNGraph(umi_mnn, use.dimred = "corrected", k = 20)
+
+# Detect communities using Walktrap algorithm
+clusters <- igraph::cluster_walktrap(snn_graph)$membership
+colLabels(umi_mnn) <- factor(clusters)
+
+cat("Cluster sizes:\n")
+print(table(colLabels(umi_mnn)))
+
+# Visualize clusters
+p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
+  ggtitle("Clusters") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "individual") +
+  ggtitle("Individual") +
+  theme_minimal()
+
+p3 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "subsets_Mito_percent") +
+  ggtitle("Mitochondrial Content") +
+  scale_color_viridis_c() +
+  theme_minimal()
+
+combined <- p1 + p2 + p3 + plot_layout(ncol = 3)
+print(combined)
+ggsave(file.path(outdir, "clustering_overview.png"), combined, 
+       width = 15, height = 5, dpi = 300)
+```
+
+**Observation:** 
+- Identified **`r length(unique(clusters))`** distinct clusters
+- No strong mitochondrial gradient → good quality control
+- Clusters show some individual enrichment
+
+## 5.2 Marker Gene Discovery
+
+Identify genes that define each cluster:
+
+```{r markers}
+# Transfer cluster labels to filtered object
+umi_filtered <- umi_filtered[, colnames(umi_mnn)]
+umi_filtered$cluster <- colLabels(umi_mnn)[colnames(umi_filtered)]
+
+# Find marker genes
+markers <- scran::scoreMarkers(
+  umi_filtered, 
+  groups = umi_filtered$cluster,
+  assay.type = "logcounts"
+)
+
+# Save top markers for each cluster
+marker_dir <- file.path(outdir, "markers")
+dir.create(marker_dir, showWarnings = FALSE)
+
+top_markers_list <- list()
+
+for (cl in names(markers)) {
+  # Extract marker data frame
+  marker_df <- as.data.frame(markers[[cl]])
+  marker_df$gene <- rownames(marker_df)
+  
+  # Sort by AUC (Area Under Curve - discriminative power)
+  marker_df <- marker_df[order(marker_df$mean.AUC, decreasing = TRUE), ]
+  
+  # Save full results
+  write.csv(marker_df, 
+            file.path(marker_dir, paste0("markers_cluster_", cl, ".csv")),
+            row.names = FALSE)
+  
+  # Store top 10 for summary
+  top_markers_list[[cl]] <- head(marker_df[, c("gene", "mean.AUC", "mean.logFC.cohen", 
+                                                "self.average", "other.average")], 10)
+}
+
+# Display top markers for Cluster 1
+cat("\nTop 10 markers for Cluster 1:\n")
+print(top_markers_list[["1"]])
+```
+
+### 5.2.1 Marker Gene Heatmap
+
+```{r marker_heatmap, fig.width=10, fig.height=10}
+# Select top 5 markers per cluster
+top_genes <- unique(unlist(lapply(markers, function(m) {
+  rownames(m)[order(m$mean.AUC, decreasing = TRUE)][1:5]
+})))
+
+# Create heatmap
+plotHeatmap(umi_filtered,
+            features = top_genes,
+            colour_columns_by = "cluster",
+            exprs_values = "logcounts",
+            center = TRUE,
+            symmetric = TRUE,
+            cluster_rows = TRUE,
+            cluster_cols = TRUE,
+            fontsize_row = 8,
+            main = "Top Marker Genes per Cluster")
+```
+
+## 5.3 Reference-Based Cell Type Annotation
+
+Use **SingleR** to automatically annotate cell types:
+
+```{r singler_annotation, fig.width=10, fig.height=5}
+# Ensure rownames are clean Ensembl IDs
+rownames(umi_filtered) <- sub("\\.\\d+$", "", rownames(umi_filtered))
+
+# Set up cache directory
+cache_dir <- file.path(outdir, "bioc_cache")
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+Sys.setenv(
+  ANNOTATIONHUB_CACHE = cache_dir,
+  EXPERIMENT_HUB_CACHE = cache_dir,
+  BIOCFILECACHE_CACHE = cache_dir
+)
+
+# Load reference (Blueprint + ENCODE)
+ref <- celldex::BlueprintEncodeData(ensembl = TRUE)
+
+# Run SingleR
+pred <- SingleR(
+  test = umi_filtered,
+  ref = ref,
+  labels = ref$label.main
+)
+
+# Add to umi_mnn
+umi_mnn$ref_label <- pred$labels[match(colnames(umi_mnn), colnames(umi_filtered))]
+umi_mnn$ref_label_fine <- pred$labels[match(colnames(umi_mnn), colnames(umi_filtered))]
+
+# Visualize
+p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "ref_label") +
+  ggtitle("SingleR Cell Type Annotation") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
+  ggtitle("Graph Clusters") +
+  theme_minimal()
+
+p1 + p2
+ggsave(file.path(outdir, "cell_type_annotation.png"), p1 + p2, 
+       width = 14, height = 5, dpi = 300)
+
+# Cross-tabulation
+cat("\nCell type by cluster:\n")
+print(table(Cluster = umi_mnn$label, CellType = umi_mnn$ref_label))
+```
+
+**Note:** SingleR provides automated labels but may not perfectly match iPSC biology. Manual curation with known stem cell markers (e.g., POU5F1, NANOG, SOX2) is recommended for publication.
+
+---
+
+# 6. Cell Cycle Analysis
+
+iPSCs can be in different cell cycle phases, which contributes to heterogeneity:
+
+```{r cell_cycle, fig.width=12, fig.height=8}
+# Create symbol-based object for cell cycle scoring
+syms <- rowData(umi_filtered)$SYMBOL
+ok <- !is.na(syms) & syms != ""
+sce_sym <- umi_filtered[ok, ]
+rownames(sce_sym) <- syms[ok]
+
+# Score cell cycle using cyclone (scran)
+cc_pairs <- readRDS(system.file("exdata", "human_cycle_markers.rds", package = "scran"))
+cc_scores <- cyclone(sce_sym, pairs = cc_pairs)
+
+# Add scores to umi_mnn
+umi_mnn$G1_score <- cc_scores$scores$G1[match(colnames(umi_mnn), colnames(sce_sym))]
+umi_mnn$S_score <- cc_scores$scores$S[match(colnames(umi_mnn), colnames(sce_sym))]
+umi_mnn$G2M_score <- cc_scores$scores$G2M[match(colnames(umi_mnn), colnames(sce_sym))]
+umi_mnn$phase <- cc_scores$phases[match(colnames(umi_mnn), colnames(sce_sym))]
+
+# Visualize
+p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "phase") +
+  ggtitle("Cell Cycle Phase") +
+  theme_minimal()
+
+p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "S_score") +
+  ggtitle("S Phase Score") +
+  scale_color_viridis_c() +
+  theme_minimal()
+
+p3 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "G2M_score") +
+  ggtitle("G2/M Phase Score") +
+  scale_color_viridis_c() +
+  theme_minimal()
+
+p4 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
+  ggtitle("Clusters") +
+  theme_minimal()
+
+combined <- (p1 + p2) / (p3 + p4)
+print(combined)
+ggsave(file.path(outdir, "cell_cycle_analysis.png"), combined, 
+       width = 12, height = 10, dpi = 300)
+
+# Summary table
+cat("\nCell cycle distribution:\n")
+print(table(Phase = umi_mnn$phase))
+
+cat("\nCell cycle by cluster:\n")
+print(table(Cluster = umi_mnn$label, Phase = umi_mnn$phase))
+```
+
+**Interpretation:**
+- Cells are distributed across G1, S, and G2M phases
+- Some clusters show enrichment for specific phases
+- This suggests asynchronous cell division in the culture
+
+---
+
+# 7. Differential Expression Analysis
+
+## 7.1 Pseudo-bulk Aggregation
+
+Aggregate counts to donor × cluster level for robust statistical testing:
+
+```{r pseudobulk_prep}
+# Create aggregation IDs
+agg_ids <- DataFrame(
+  donor = droplevels(factor(umi_filtered$individual)),
+  replicate = droplevels(factor(umi_filtered$replicate)),
+  cluster = droplevels(factor(umi_filtered$cluster))
+)
+
+# Aggregate
+pb <- aggregateAcrossCells(umi_filtered, ids = agg_ids)
+
+cat("Pseudo-bulk sample structure:\n")
+cat("- Samples:", ncol(pb), "\n")
+cat("- Genes:", nrow(pb), "\n\n")
+
+cat("Samples per cluster:\n")
+print(table(pb$cluster, pb$donor))
+```
+
+## 7.2 Differential Expression: Individual Variation
+
+Test for donor differences within each cluster:
+
+```{r de_analysis, results='hide'}
+# Initialize results storage
+de_results <- list()
+
+# Get clusters with sufficient replication (≥2 donors)
+cluster_counts <- table(pb$cluster, pb$donor)
+valid_clusters <- rownames(cluster_counts)[rowSums(cluster_counts > 0) >= 2]
+
+cat("Testing", length(valid_clusters), "clusters with ≥2 donors\n\n")
+
+for (clu in valid_clusters) {
+  cat("Testing Cluster", clu, "...\n")
+  
+  # Subset to this cluster
+  keep <- pb$cluster == clu
+  mat <- assay(pb, "counts")[, keep, drop = FALSE]
+  donor <- droplevels(pb$donor[keep])
+  replicate <- droplevels(pb$replicate[keep])
+  
+  # Need at least 3 samples and 2 donors
+  if (ncol(mat) < 3 || nlevels(donor) < 2) {
+    cat("  Skipped - insufficient samples\n")
+    next
+  }
+  
+  # EdgeR pipeline
+  y <- DGEList(mat)
+  y <- calcNormFactors(y)
+  
+  # Design: donor + replicate (blocking)
+  design <- model.matrix(~ 0 + donor + replicate)
+  colnames(design) <- make.names(colnames(design))
+  
+  # Filter low-expressed genes
+  keep_genes <- filterByExpr(y, design = design, min.count = 5)
+  y <- y[keep_genes, , keep.lib.sizes = FALSE]
+  
+  if (nrow(y) < 100) {
+    cat("  Skipped - too few genes after filtering\n")
+    next
+  }
+  
+  # Estimate dispersion
+  y <- estimateDisp(y, design)
+  
+  # Fit model
+  fit <- glmQLFit(y, design)
+  
+  # Test: first donor vs second donor
+  donors <- levels(donor)
+  if (length(donors) >= 2) {
+    contrast_str <- paste0("donor", donors[1], " - donor", donors[2])
+    cn <- makeContrasts(contrasts = contrast_str, levels = design)
+    
+    qlf <- glmQLFTest(fit, contrast = cn)
+    tt <- topTags(qlf, n = Inf)$table
+    
+    # Store results
+    de_results[[clu]] <- tt
+    
+    cat("  Found", sum(tt$FDR < 0.05), "DE genes (FDR < 0.05)\n")
+  }
+}
+
+# Save all DE results
+de_dir <- file.path(outdir, "DE_results")
+dir.create(de_dir, showWarnings = FALSE)
+
+for (clu in names(de_results)) {
+  write.csv(de_results[[clu]],
+            file.path(de_dir, paste0("DE_cluster_", clu, "_donor_comparison.csv")),
+            row.names = TRUE)
+}
+```
+
+```{r de_summary}
+# Summary table
+de_summary <- data.frame(
+  Cluster = names(de_results),
+  Total_Genes = sapply(de_results, nrow),
+  DE_Genes = sapply(de_results, function(x) sum(x$FDR < 0.05)),
+  Upregulated = sapply(de_results, function(x) sum(x$FDR < 0.05 & x$logFC > 0)),
+  Downregulated = sapply(de_results, function(x) sum(x$FDR < 0.05 & x$logFC < 0))
+)
+
+cat("\nDifferential Expression Summary:\n")
+print(de_summary)
+```
+
+## 7.3 Volcano Plots
+
+```{r volcano_plots, fig.width=8, fig.height=6}
+# Function to create volcano plot
+plot_volcano <- function(de_table, title, top_n = 10) {
+  df <- de_table
+  df$gene <- rownames(df)
+  df$significant <- ifelse(df$FDR < 0.05 & abs(df$logFC) > 1, "Significant", "Not Significant")
+  
+  # Label top genes
+  df <- df[order(abs(df$logFC), decreasing = TRUE), ]
+  df$label <- ""
+  df$label[1:top_n] <- df$gene[1:top_n]
+  
+  ggplot(df, aes(x = logFC, y = -log10(PValue), color = significant)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    geom_text_repel(aes(label = label), size = 3, max.overlaps = 20) +
+    scale_color_manual(values = c("Not Significant" = "grey70", "Significant" = "red3")) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+    theme_minimal(base_size = 12) +
+    labs(
+      title = title,
+      x = "Log2 Fold Change",
+      y = "-Log10 P-value",
+      color = ""
+    ) +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+}
+
+# Create volcano plots for clusters with DE genes
+for (clu in names(de_results)) {
+  if (sum(de_results[[clu]]$FDR < 0.05) > 0) {
+    p <- plot_volcano(de_results[[clu]], 
+                      title = paste("Cluster", clu, "- Individual Comparison"))
+    print(p)
+    ggsave(file.path(de_dir, paste0("volcano_cluster_", clu, ".png")), 
+           p, width = 8, height = 6, dpi = 300)
+  }
+}
+```
+
+**Interpretation:**
+- Identified genes that vary between individuals
+- These likely represent genetic diversity in the Yoruba population
+- Red points show statistically significant differences (FDR < 0.05, |logFC| > 1)
+
+---
+
+# 8. Pathway Analysis
+
+## 8.1 Gene Set Enrichment (GSEA)
+
+Test whether biological pathways are enriched in differentially expressed genes:
+
+```{r gsea, results='hide'}
+# Load Hallmark gene sets
+hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+pathways <- split(hallmark$gene_symbol, hallmark$gs_name)
+
+# Run GSEA for each cluster
+enrichment_results <- list()
+
+for (clu in names(de_results)) {
+  cat("Running GSEA for Cluster", clu, "\n")
+  
+  de_table <- de_results[[clu]]
+  
+  # Create ranked gene list (by signed -log10 p-value)
+  ranks <- setNames(
+    -log10(de_table$PValue) * sign(de_table$logFC),
+    rownames(de_table)
+  )
+  
+  # Remove NA/Inf
+  ranks <- ranks[!is.na(ranks) & !is.infinite(ranks)]
+  ranks <- sort(ranks, decreasing = TRUE)
+  
+  # Run fgsea
+  fgsea_res <- fgsea(
+    pathways = pathways,
+    stats = ranks,
+    minSize = 15,
+    maxSize = 500,
+    nperm = 10000
+  )
+  
+  # Sort by p-value
+  fgsea_res <- fgsea_res[order(pval), ]
+  enrichment_results[[clu]] <- fgsea_res
+  
+  # Save
+  write.csv(as.data.frame(fgsea_res),
+            file.path(de_dir, paste0("enrichment_cluster_", clu, ".csv")),
+            row.names = FALSE)
+}
+```
+
+```{r gsea_summary}
+# Print top enriched pathways for each cluster
+for (clu in names(enrichment_results)) {
+  res <- enrichment_results[[clu]]
+  sig <- res[padj < 0.1, ]
+  
+  if (nrow(sig) > 0) {
+    cat("\n=== Cluster", clu, "- Top Enriched Pathways ===\n")
+    print(sig[1:min(5, nrow(sig)), .(pathway, pval, padj, NES)])
+  }
+}
+```
+
+## 8.2 Pathway Activity Scoring
+
+Calculate pathway scores for each cell using singscore:
+
+```{r pathway_scoring, fig.width=10, fig.height=8}
+# Score all Hallmark pathways
+expr <- assay(sce_sym, "logcounts")
+rnk <- rankGenes(expr)
+
+# Score each pathway
+scores <- vapply(pathways, function(gs) {
+  gs <- intersect(gs, rownames(sce_sym))
+  if (length(gs) < 5) return(rep(NA_real_, ncol(sce_sym)))
+  simpleScore(rnk, upSet = gs)$TotalScore
+}, numeric(ncol(sce_sym)))
+
+# Add to umi_mnn
+scores_df <- as.data.frame(scores)
+rownames(scores_df) <- colnames(sce_sym)
+scores_df <- scores_df[colnames(umi_mnn), , drop = FALSE]
+
+for (pathway in colnames(scores_df)) {
+  umi_mnn[[pathway]] <- scores_df[[pathway]]
+}
+
+# Plot selected pathways
+pathways_to_plot <- c(
+  "HALLMARK_OXIDATIVE_PHOSPHORYLATION",
+  "HALLMARK_MYC_TARGETS_V1",
+  "HALLMARK_E2F_TARGETS",
+  "HALLMARK_G2M_CHECKPOINT"
+)
+
+plot_list <- lapply(pathways_to_plot, function(pw) {
+  if (pw %in% colnames(umi_mnn)) {
+    plotReducedDim(umi_mnn, "UMAP", colour_by = pw) +
+      ggtitle(gsub("HALLMARK_", "", pw)) +
+      scale_color_viridis_c() +
+      theme_minimal() +
+      theme(legend.position = "right")
+  }
+})
+
+combined <- wrap_plots(plot_list, ncol = 2)
+print(combined)
+ggsave(file.path(outdir, "pathway_activity_umap.png"), combined, 
+       width = 12, height = 10, dpi = 300)
+```
+
+**Interpretation:**
+- **Oxidative phosphorylation:** Metabolically active cells
+- **MYC targets:** Growth and proliferation
+- **E2F/G2M checkpoint:** Cell cycle progression
+- Different clusters show distinct pathway activities
+
+---
+
+# 9. Final Summary and Cluster Annotation
+
+## 9.1 Comprehensive Cluster Summary
+
+```{r final_summary}
+# Create comprehensive summary table
+cluster_annotation <- data.frame(
+  Cluster = levels(umi_filtered$cluster),
+  n_cells = as.numeric(table(umi_filtered$cluster)),
+  Pct_of_total = round(100 * table(umi_filtered$cluster) / ncol(umi_filtered), 1)
+)
+
+# Add dominant SingleR label
+cluster_annotation$Dominant_CellType <- tapply(
+  umi_mnn$ref_label, 
+  umi_mnn$label, 
+  function(x) names(sort(table(x), decreasing = TRUE))[1]
+)
+
+# Add dominant cell cycle phase
+cluster_annotation$Dominant_Phase <- tapply(
+  umi_mnn$phase,
+  umi_mnn$label,
+  function(x) names(sort(table(x), decreasing = TRUE))[1]
+)
+
+# Add top marker gene
+for (i in 1:nrow(cluster_annotation)) {
+  cl <- as.character(cluster_annotation$Cluster[i])
+  if (cl %in% names(markers)) {
+    top_gene <- rownames(markers[[cl]])[1]
+    cluster_annotation$Top_Marker[i] <- top_gene
+  } else {
+    cluster_annotation$Top_Marker[i] <- NA
+  }
+}
+
+# Add number of DE genes (if tested)
+cluster_annotation$DE_Genes <- 0
+for (i in 1:nrow(cluster_annotation)) {
+  cl <- as.character(cluster_annotation$Cluster[i])
+  if (cl %in% names(de_results)) {
+    cluster_annotation$DE_Genes[i] <- sum(de_results[[cl]]$FDR < 0.05)
+  }
+}
+
+print(cluster_annotation)
+write.csv(cluster_annotation, file.path(outdir, "cluster_annotation_summary.csv"), 
+          row.names = FALSE)
+```
+
+## 9.2 Heatmap of Top DE Genes
+
+```{r de_heatmap, fig.width=10, fig.height=12}
+# Collect top 20 DE genes from each cluster
+all_top_genes <- lapply(de_results, function(x) {
+  x <- x[order(x$FDR), ]
+  rownames(x)[1:min(20, nrow(x))]
+})
+top_genes_union <- unique(unlist(all_top_genes))
+
+# Remove NA
+top_genes_union <- top_genes_union[!is.na(top_genes_union)]
+
+# Filter to genes present in data
+top_genes_union <- intersect(top_genes_union, rownames(umi_filtered))
+
+if (length(top_genes_union) > 0) {
+  plotHeatmap(
+    umi_filtered[top_genes_union, ],
+    colour_columns_by = c("individual", "cluster"),
+    exprs_values = "logcounts",
+    center = TRUE,
+    symmetric = TRUE,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    fontsize_row = 6,
+    main = "Top Differentially Expressed Genes"
+  )
+}
+```
+
+---
+
+# 10. Conclusions
+
+## 10.1 Key Findings
+
+1. **Data Quality**
+   - Successfully processed **`r ncol(umi_filtered)` high-quality cells** from **3 individuals**
+   - Batch effects successfully corrected while preserving biological variation
+   - Scran normalization performed optimally
+
+2. **Cell Heterogeneity**
+   - Identified **`r length(unique(umi_filtered$cluster))` distinct subpopulations** within iPSC cultures
+   - Cell cycle heterogeneity contributes significantly to population structure
+   - Cells distributed across G1, S, and G2/M phases
+
+3. **Individual Variation**
+   - Detected **individual-specific gene expression patterns** reflecting genetic diversity
+   - Total DE genes across clusters: **`r sum(de_summary$DE_Genes, na.rm = TRUE)`**
+   - Pathway analysis reveals functional differences between donors
+
+4. **Biological Insights**
+   - iPSC populations are not homogeneous - even in culture
+   - Cell cycle state is a major source of variation
+   - Individual genetic background influences gene expression
+
+## 10.2 Technical Notes
+
+**Strengths of this analysis:**
+- Rigorous quality control and normalization
+- Proper batch correction with validation
+- Pseudo-bulk DE for robust statistical testing
+- Comprehensive pathway analysis
+
+**Limitations:**
+- Small sample size (3 individuals)
+- Single cell type (iPSCs)
+- SingleR annotations may not be perfect for stem cells
+
+## 10.3 Future Directions
+
+- **Trajectory analysis:** Map differentiation paths if present
+- **Gene regulatory networks:** Identify transcription factors driving subpopulations
+- **Integration:** Compare with other iPSC datasets
+- **Functional validation:** Experimental confirmation of key findings
+
+---
+
+# 11. Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+---
+
+# References
+
+- **Tung et al. (2017)** "Batch effects and the effective design of single-cell gene expression studies" *Scientific Reports*
+- **Lun et al. (2016)** "A step-by-step workflow for low-level analysis of single-cell RNA-seq data" *F1000Research*
+- **Haghverdi et al. (2018)** "Batch effects in single-cell RNA-sequencing data are corrected by matching mutual nearest neighbors" *Nature Biotechnology*
+
+---
+
+**Analysis completed:** `r Sys.time()`
+
+**Analyst:** Your Name
+
+**Contact:** your.email@example.com

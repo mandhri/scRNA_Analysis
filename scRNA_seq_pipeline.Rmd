@@ -676,114 +676,108 @@ print(table(Cluster = umi_mnn$label, CellType = umi_mnn$ref_label))
 - All cells are in a pluripotent or near-pluripotent state.
 - There is no evidence of contaminating differentiated cell types.
 - UMAP structure is not driven by ESC vs iPSC calls.
+- 3 donor islands (cluster 1, 2, 3), which match with fastMNN + replicate-only correction.
 
+
+SingleR (using the Human Primary Cell Atlas reference) classifies all cells as
+either **iPS cells** or **embryonic stem cells**, with both labels intermixed
+across all three clusters. This behaviour is expected because ESCs and iPSCs
+are transcriptionally very similar in bulk references.
+
+The important point is that **no differentiated cell types** (e.g. epithelial,
+immune, endothelial, mesenchymal) were assigned. This provides independent
+confirmation that all cells in our dataset represent **pluripotent stem cell
+states** without contamination.
+
+Because the SingleR reference does not resolve fine-grained iPSC states, and
+because clustering clearly reflects **donor-level variation** rather than cell
+type heterogeneity, we treat these groups as **iPSC subpopulations** rather
+than attempting to assign differentiated cell type labels.
 
 
 
 # 6. Cell Cycle Analysis
 
-iPSCs can be in different cell cycle phases, which contributes to heterogeneity:
+iPSCs can be in different cell cycle phases, which contributes to heterogeneity. For cell cycle scoring we used the canonical S and G2/M gene lists from
+Macosko et al. (2015) / Regev lab (identical to the `cc.genes` set used in the
+original Seurat workflow), rather than constructing gene sets automatically
+from GO term names. This provides a more standard and reproducible definition
+of cell cycle phases.
+
+Using these markers, cells are classified into G1, S, and G2/M states. The
+resulting phase calls are distributed across all three donor-specific clusters,
+indicating that the major structure in the corrected UMAP reflects donor
+variation rather than simple separation by cell cycle.
 
 ```{r cell_cycle, fig.width=12, fig.height=8}
 
 # Verify cells are aligned
 cat("Cell alignment check:\n")
 cat("- Cells in umi_filtered:", ncol(umi_filtered), "\n")
-cat("- Cells in umi_mnn:", ncol(umi_mnn), "\n")
-cat("- Cells match:", identical(colnames(umi_filtered), colnames(umi_mnn)), "\n\n")
+cat("- Cells in umi_mnn     :", ncol(umi_mnn), "\n")
+cat("- Cells match          :", identical(colnames(umi_filtered), colnames(umi_mnn)), "\n\n")
 
-# Create symbol-based object for cell cycle scoring
+# SYMBOL-based SCE for scoring
 syms <- rowData(umi_filtered)$SYMBOL
-ok <- !is.na(syms) & syms != ""
+ok   <- !is.na(syms) & syms != ""
 sce_sym <- umi_filtered[ok, ]
 rownames(sce_sym) <- syms[ok]
 
 cat("Created sce_sym for cell cycle scoring:\n")
 cat("- Genes with symbols:", nrow(sce_sym), "\n")
-cat("- Cells:", ncol(sce_sym), "\n\n")
+cat("- Cells             :", ncol(sce_sym), "\n\n")
 
-# Get cell cycle gene sets from MSigDB (fully automatic!)
-library(msigdbr)
+# Canonical S and G2M gene sets (Macosko / Regev / Seurat cc.genes)
+s_genes <- c(
+  "MCM5","PCNA","TYMS","FEN1","MCM2","MCM4","RRM1","UNG","GINS2","MCM6",
+  "CDCA7","DTL","PRIM1","UHRF1","HELLS","RFC2","RPA2","NASP","RAD51AP1",
+  "GMNN","WDR76","SLBP","CCNE2","UBR7","POLD3","MSH2","ATAD2","RAD51",
+  "RRM2","CDC45","CDC6","EXO1","TIPIN","DSCC1","BLM","CASP8AP2","USP1",
+  "CLSPN","POLA1","CHAF1B","BRIP1","E2F8"
+)
 
-cat("Retrieving cell cycle gene sets from MSigDB...\n")
+g2m_genes <- c(
+  "HMGB2","CDK1","NUSAP1","UBE2C","BIRC5","TPX2","TOP2A","NDC80","CKS2",
+  "NUF2","CKS1B","MKI67","TMPO","CENPF","TACC3","FAM64A","SMC4","CCNB2",
+  "CKAP2L","CKAP2","AURKB","BUB1","KIF11","ANP32E","TUBB4B","GTSE1",
+  "KIF20B","HJURP","CDCA3","HN1","CDC20","TTK","CDC25C","KIF2C","RANGAP1",
+  "NCAPD2","DLGAP5","CDCA2","CDCA8","ECT2","KIF23","HMMR","AURKA",
+  "PSRC1","ANLN","LBR","CKAP5","CENPE","CTCF","NEK2","G2E3","GAS2L3",
+  "CBX5","CENPA"
+)
 
-# Get all GO Biological Process gene sets
-go_bp <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "GO:BP")
+cat("Original S genes  :", length(s_genes), "\n")
+cat("Original G2M genes:", length(g2m_genes), "\n\n")
 
-# Get unique pathway names
-all_pathways <- unique(go_bp$gs_name)
-
-cat("Total GO BP pathways available:", length(all_pathways), "\n\n")
-
-# AUTOMATICALLY find S phase related terms
-cat("Searching for S phase related GO terms...\n")
-s_keywords <- c("S_PHASE", "DNA_REPLICATION", "DNA_SYNTHESIS")
-s_phase_terms <- grep(paste(s_keywords, collapse = "|"), all_pathways, 
-                      value = TRUE, ignore.case = TRUE)
-
-cat("Found", length(s_phase_terms), "S phase related terms:\n")
-print(head(s_phase_terms, 10))
-
-# Extract S phase genes
-s_genes <- go_bp %>%
-  filter(gs_name %in% s_phase_terms) %>%
-  pull(gene_symbol) %>%
-  unique()
-
-# AUTOMATICALLY find G2/M phase related terms
-cat("\nSearching for G2/M phase related GO terms...\n")
-g2m_keywords <- c("G2", "M_PHASE", "MITOTIC", "MITOSIS", "CELL_DIVISION", 
-                  "CHROMOSOME_SEGREGATION", "SPINDLE", "CYTOKINESIS")
-g2m_phase_terms <- grep(paste(g2m_keywords, collapse = "|"), all_pathways, 
-                        value = TRUE, ignore.case = TRUE)
-
-cat("Found", length(g2m_phase_terms), "G2/M phase related terms:\n")
-print(head(g2m_phase_terms, 10))
-
-# Extract G2/M phase genes
-g2m_genes <- go_bp %>%
-  filter(gs_name %in% g2m_phase_terms) %>%
-  pull(gene_symbol) %>%
-  unique()
-
-cat("\nCell cycle gene sets retrieved automatically:\n")
-cat("- S phase genes:", length(s_genes), "\n")
-cat("- G2/M phase genes:", length(g2m_genes), "\n")
-
-# Find genes present in data
-s_genes_present <- intersect(s_genes, rownames(sce_sym))
+# Keep only genes present in the data
+s_genes_present   <- intersect(s_genes,   rownames(sce_sym))
 g2m_genes_present <- intersect(g2m_genes, rownames(sce_sym))
 
-cat("\nCell cycle markers found in data:\n")
-cat("- S phase:", length(s_genes_present), "/", length(s_genes), 
-    paste0("(", round(100*length(s_genes_present)/length(s_genes), 1), "%)"), "\n")
-cat("- G2/M phase:", length(g2m_genes_present), "/", length(g2m_genes),
-    paste0("(", round(100*length(g2m_genes_present)/length(g2m_genes), 1), "%)"), "\n\n")
+cat("Cell cycle markers found in data:\n")
+cat("- S phase   :", length(s_genes_present),  "/", length(s_genes),   "\n")
+cat("- G2/M phase:", length(g2m_genes_present), "/", length(g2m_genes), "\n\n")
 
-if (length(s_genes_present) < 10 | length(g2m_genes_present) < 10) {
-  warning("Few cell cycle markers found - results may be less reliable")
+if (length(s_genes_present) < 10 || length(g2m_genes_present) < 10) {
+  warning("Few canonical cell cycle markers found - phase calls may be less reliable")
 }
 
-# Calculate scores (mean expression of markers)
+# Expression matrix for scoring
 expr_mat <- logcounts(sce_sym)
 
-# S score
-s_scores <- colMeans(expr_mat[s_genes_present, , drop = FALSE])
-
-# G2M score
+# S and G2M scores = mean expression of markers
+s_scores   <- colMeans(expr_mat[s_genes_present,   , drop = FALSE])
 g2m_scores <- colMeans(expr_mat[g2m_genes_present, , drop = FALSE])
 
-# Normalize scores (z-score)
-s_scores_norm <- scale(s_scores)[,1]
-g2m_scores_norm <- scale(g2m_scores)[,1]
+# Normalise scores (z-score across cells)
+s_scores_norm   <- as.numeric(scale(s_scores))
+g2m_scores_norm <- as.numeric(scale(g2m_scores))
 
-# Assign phases based on scores
-# Method: cells with high scores in S or G2M are assigned to those phases
+# Assign phases:
+
+# default G1, then S if S high, G2M if G2M high, prioritise G2M if both re high
 phases <- rep("G1", ncol(sce_sym))
-phases[s_scores_norm > 0.5] <- "S"
+phases[s_scores_norm   > 0.5] <- "S"
 phases[g2m_scores_norm > 0.5] <- "G2M"
-
-# If both high, prioritise G2M (cells progress S to G2M)
 phases[s_scores_norm > 0.5 & g2m_scores_norm > 0.5] <- "G2M"
 
 cat("Cell cycle phase assignment:\n")
@@ -792,65 +786,56 @@ print(phase_table)
 cat("\nPhase percentages:\n")
 print(round(100 * prop.table(phase_table), 1))
 
-# Transfer to umi_mnn
-stopifnot(identical(colnames(umi_mnn), colnames(sce_sym)))
-
-umi_mnn$S_score <- s_scores_norm
-umi_mnn$G2M_score <- g2m_scores_norm  
-umi_mnn$phase <- factor(phases, levels = c("G1", "S", "G2M"))
-
-cat("\nTransfer verification:\n")
-cat("- NAs in phase:", sum(is.na(umi_mnn$phase)), "\n")
-cat("- Phase distribution in umi_mnn:\n")
+umi_mnn$S_score   <- s_scores_norm
+umi_mnn$G2M_score <- g2m_scores_norm
+umi_mnn$phase     <- factor(phases, levels = c("G1","S","G2M"))
 print(table(umi_mnn$phase))
 
-
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "phase") +
-  ggtitle("Cell Cycle Phase\n(from GO gene sets)") +
+  ggtitle("Cell cycle phase (canonical S / G2M genes)") +
   scale_color_manual(values = c("G1" = "gray60", "S" = "steelblue", "G2M" = "orange")) +
   theme_minimal()
 
 p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "S_score") +
-  ggtitle("S Phase Score") +
+  ggtitle("S phase score") +
   scale_color_viridis_c() +
   theme_minimal()
 
 p3 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "G2M_score") +
-  ggtitle("G2/M Phase Score") +
+  ggtitle("G2/M phase score") +
   scale_color_viridis_c() +
   theme_minimal()
 
 p4 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
-  ggtitle("Clusters") +
+  ggtitle("Graph clusters") +
   theme_minimal()
 
 combined <- (p1 + p2) / (p3 + p4)
 print(combined)
 
-# Summary table
+
+# Summary tables
 cat("\nCell cycle distribution:\n")
 print(table(Phase = umi_mnn$phase))
-
 cat("\nCell cycle by cluster:\n")
 print(table(Cluster = umi_mnn$label, Phase = umi_mnn$phase))
-
 cat("\nCell cycle by individual:\n")
 print(table(Individual = umi_mnn$individual, Phase = umi_mnn$phase))
-
-
-
 
 
 ```
 
 **Interpretation:**
-Cell cycle scoring using GO-derived gene sets successfully identified cells in G1, S, and G2M phases. Importantly, cell cycle state is distributed similarly across all three clusters, with each showing comparable S phase and G2M scores. This indicates that:
+Using canonical S and G2/M markers from Macosko et al. (2015), we assigned
+cell cycle phases to all cells. As expected for iPSCs, G1, S, and G2/M cells
+are present across all donors.
 
-- All individuals exhibit similar proliferation rates
-- Culture conditions are consistent across samples
-- Clustering is driven by individual genetic variation, not cell cycle differences
+Importantly, **cell cycle variation does not explain the graph clusters**:
+each donor-specific island contains a mixture of phases, and both S-phase and
+G2/M scores vary within clusters rather than between them.
 
-This validates our analytical approach and confirms that batch correction preserved biological signal without introducing cell cycle-related artifacts.
+This confirms that the major structure in the corrected UMAP reflects
+**donor-level biological differences** rather than cycling artefacts.
 
 
 **Note**
@@ -914,10 +899,6 @@ cluster 1 = only donor NA19101
 cluster 2 = only donor NA19098
 
 cluster 3 = only donor NA19239
-
-So when you later said “give me clusters with ≥2 donors”, you got… 0 clusters. And edgeR was like: “there’s nothing to compare.”
-
-Why did this happen? Because earlier we preserved donor separation (fastMNN on replicate only). That gave you a UMAP with 3 donor islands. Then you clustered on that → clusters = donor islands. So of course each “cluster” only has one donor.
 
 
 ### 8.1b. Cell-Type-based (Within-Type Comparison)

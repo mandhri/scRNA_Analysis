@@ -1107,9 +1107,6 @@ but as donor-associated transcriptional signatures within iPSCs.
 
 
 
-
-
-
 # 8. Pathway Analysis
 
 ## 8.1 Gene Set Enrichment (GSEA)
@@ -1271,6 +1268,21 @@ combined <- wrap_plots(plot_list, ncol = 2)
 print(combined)
 
 ```
+
+**Note:**
+
+For per-cell pathway activity we restricted attention to Hallmark pathways that
+were **significantly enriched in the pseudo-bulk GSEA** (FDR < 0.5) in at least
+one donor comparison. For each contrast, we selected the top five pathways by
+adjusted p-value and obtained a unique set of N pathways (listed in the console
+output above). These pathways (e.g. HALLMARK_G2M_CHECKPOINT, HALLMARK_XYZ)
+were then scored at the single-cell level using singscore and visualised on the
+UMAP.
+
+This ensures that the pathway overlays shown in Figure X correspond directly to
+pathways identified as significantly enriched in the donor-level GSEA, rather
+than being arbitrarily chosen.
+
 
 # References
 

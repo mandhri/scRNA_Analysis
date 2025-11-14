@@ -87,9 +87,6 @@ library(pheatmap)
 library(dplyr)
 library(tidyr)
 
-# Set output directory
-outdir <- "/mnt/vol1/scRNA_Analysis"
-dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 ```
 
 ```{r load_data}
@@ -125,6 +122,8 @@ cat("- Genes removed:", nrow(umi) - nrow(umi_qc), "\n")
 
 **Critical step:** Detect and remove doublets BEFORE normalisation and clustering.
 
+In single-cell RNA sequencing (scRNA-seq) experiments, doublets are artifactual libraries generated from two cells. They typically arise due to errors in cell sorting or capture, especially in droplet-based protocols (Zheng et al. 2017) involving thousands of cells.
+
 **Why this order matters:**
 - Doublets can form artificial clusters
 - Doublet marker genes confound real biology
@@ -135,9 +134,6 @@ cat("- Genes removed:", nrow(umi) - nrow(umi_qc), "\n")
 # Run doublet detection
 set.seed(123)
 umi_qc <- scDblFinder(umi_qc)
-
-# Check results
-cat("\nDoublet detection results:\n")
 print(table(umi_qc$scDblFinder.class))
 
 cat("\nDoublet scores summary:\n")
@@ -171,6 +167,10 @@ p2 <- ggplot(df_doublets, aes(x = library_size, y = doublet_score, color = class
        color = "Classification")
 
 p1 + p2
+
+outdir <- "/mnt/vol1/scRNA_Analysis"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
 ggsave(file.path(outdir, "doublet_detection.png"), p1 + p2, 
        width = 12, height = 5, dpi = 300)
 ```
@@ -184,13 +184,13 @@ Filter out predicted doublets:
 umi_filtered <- umi_qc[, umi_qc$scDblFinder.class == "singlet"]
 
 cat("\nAfter doublet removal:\n")
-cat("- Cells remaining:", ncol(umi_filtered), "\n")
-cat("- Doublets removed:", sum(umi_qc$scDblFinder.class == "doublet"), "\n")
-cat("- Doublet rate:", round(100 * mean(umi_qc$scDblFinder.class == "doublet"), 1), "%\n")
+cat("Cells remaining:", ncol(umi_filtered), "\n")
+cat("Doublets removed:", sum(umi_qc$scDblFinder.class == "doublet"), "\n")
+cat("Doublet rate:", round(100 * mean(umi_qc$scDblFinder.class == "doublet"), 1), "%\n")
 
 # Check distribution across individuals
-cat("\nCells per individual after doublet removal:\n")
 print(table(umi_filtered$individual))
+
 ```
 
 **Note:** All downstream analyses (normalisation, clustering, DE) now work with high-quality singlets only.
@@ -207,24 +207,27 @@ print(table(umi_filtered$individual))
 - **Scran deconvolution:** Sophisticated pooling-based method that handles composition biases
 
 ```{r normalisation, fig.width=15, fig.height=5}
+
 # Method 1: Raw log transformation (baseline)
 assay(umi_filtered, "logcounts_raw") <- log2(counts(umi_filtered) + 1)
 
-# Method 2: CPM normalization
+# Method 2: CPM normalisation
 assay(umi_filtered, "logcpm") <- log2(calculateCPM(umi_filtered) + 1)
 
 # Method 3: Scran deconvolution (RECOMMENDED)
-# Step 1: Quick clustering for pooling
+
+## Step 1: clustering for pooling
 quick_clusters <- quickCluster(umi_filtered, min.size = 20)
 
-# Step 2: Compute size factors
+## Step 2: Compute size factors
 umi_filtered <- computeSumFactors(umi_filtered, clusters = quick_clusters)
 
-# Check size factors are well-behaved
+## Check size factors
 print(summary(sizeFactors(umi_filtered)))
 
-# Step 3: Apply log normalisation
-umi_filtered <- logNormCounts(umi_filtered)  # Creates "logcounts" assay
+## Step 3: Apply log normalisation
+umi_filtered <- logNormCounts(umi_filtered) 
+
 ```
 
 ### 4.1.1 Visual Comparison
@@ -258,12 +261,14 @@ combined <- plot_grid(p1, p2, p3, ncol = 3, align = "hv")
 print(combined)
 ggsave(file.path(outdir, "normalisation_comparison.png"), combined, 
        width = 15, height = 5, dpi = 300)
+
 ```
 
 **Interpretation:**
-- **Raw counts** show strong batch effects (replicates cluster separately)
+- **Raw counts** show batch effects (replicates cluster somewhat separate)
 - **CPM** improves but still shows technical variation
 - **Scran** shows clearest biological separation by individual
+
 - **Conclusion:** Proceeding with scran normalisation
 
 
@@ -282,10 +287,9 @@ fit <- modelGeneVar(umi_filtered, block = umi_filtered$replicate)
 hvg <- getTopHVGs(fit, n = 2000)
 cat("Selected", length(hvg), "highly variable genes\n")
 
-# Run PCA on HVGs (for "before correction" comparison)
+# Run PCA on HVGs
 umi_filtered <- runPCA(umi_filtered, subset_row = hvg, name = "PCA")
 
-# Visualize structure before correction
 p1 <- plotPCA(umi_filtered, dimred = "PCA", colour_by = "replicate") +
   ggtitle("Before Correction: Colored by Replicate") +
   theme_minimal()
@@ -298,47 +302,67 @@ p1 + p2
 
 ```
 
-**Observation:** replicate and individual show strong clustering patterns
+**Observation:** individual show strong clustering patterns and replicate show somewhat strong clustering patterns.
 
 ## 5.2 Experimental Design Assessment
 
 **CRITICAL CHECK:** Before applying batch correction, we must verify whether batch and biology are independent:
 
 ```{r design_check}
-# Check experimental design
-design_table <- table(umi_filtered$individual, umi_filtered$replicate)
-print(design_table)
 
-# Test for independence
+# Cross-tabulate individual by replicate
+design_table <- table(umi_filtered$individual, umi_filtered$replicate)
+design_table
+
+# Formal test of independence (association, not causality)
 chi_test <- chisq.test(design_table)
 chi_test
+
 ```
 
 ### 5.2.1 Understanding Confounding
 
-**What we found:** p-value < 0.05 indicates **confounded experimental design**.
+**What we found:** p-value < 0.05 indicates **that the observed individual × replicate counts are not consistent with independence. In other words, individual and replicate are statistically associated**.
+
+The chi-square test gives a small p-value, meaning our individual × replicate table is not what we would expect if these factors were independent. In practice, some replicates mostly or entirely belong to a single donor, so individual and replicate are clearly associated rather than independent.
 
 **What this means:**
-- Each individual was processed mostly in separate batches
-- Batch effects and biological differences are entangled
-- Computational methods **cannot** distinguish technical from biological variation
-- Attempting batch correction will remove both technical AND biological signal
+
+The contingency table shows that individual and replicate are not independent:
+
+- Some replicates contain cells from only one individual.
+
+- Replicates are effectively nested within individuals rather than fully crossed.
+
+The chi-square test simply confirms this association statistically (p-value < 0.05), but the important practical implication is:
+
+- We can correct for replicate-specific technical variation,
+
+- We must avoid treating individual as a batch factor, otherwise we risk removing the biological differences we are interested in.
+
 
 **Why this happened:**
-- Samples from different individuals arrived/were processed at different times
-- This is common in real-world experiments
+Unbalanced / nested designs are common in real scRNA-seq studies. They do not make batch correction impossible, but they mean we need to:
+
+- Use a technical batch variable (here: replicate) for correction, and
+
+- Explicitly check afterwards that donor-level biology is still visible.
 
 **Consequences:**
-Unbalanced / partially confounded designs can cause over-correction if we batch at too fine a level (e.g. donor × replicate). We should either batch at a coarser level (replicate) or fall back to models
+In this dataset we therefore focus on:
+
+- Batch factor: replicate (technical),
+
+- Biology of interest: individual (donor).
+
 
 
 ## 5.2.1.1 FMNN Batch Correction (typical approach)
 
-Use **fastMNN** (Mutual Nearest Neighbours) to remove technical batch effects while preserving biological variation:
-
 UMAP is an algorithm that takes a high-dimensional dataset (such as a single-cell RNA dataset) and reduces it to a low-dimensional plot that retains much of the original information
 
 ```{r batch_correction, fig.width=10, fig.height=5}
+
 # Create batch factor: individual × replicate
 batch_factor <- interaction(umi_filtered$individual, umi_filtered$replicate, drop = TRUE)
 
@@ -348,7 +372,7 @@ donor_of_level <- sub("\\.r[0-9]+$", "", levels_batch)
 merge_order <- unname(split(seq_along(levels_batch), donor_of_level))
 print(merge_order)
 
-# Run fastMNN
+# Apply fastMNN
 umi_mnn <- fastMNN(
   umi_filtered,
   subset.row = hvg,
@@ -365,7 +389,6 @@ colData(umi_mnn)[, keep_cols] <- colData(umi_filtered)[colnames(umi_mnn), keep_c
 # UMAP on corrected data
 umi_mnn <- runUMAP(umi_mnn, dimred = "corrected")
 
-# Visualise results
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "replicate") +
   ggtitle("After Correction: Coloured by Replicate") +
   theme_minimal()
@@ -386,15 +409,13 @@ This “batch = donor × replicate” strategy is conceptually fine but not suit
 
 ## 5.3 FastMNN Batch Correction with Validation
 
-Use **fastMNN** (Mutual Nearest Neighbours) to remove technical batch effects while preserving biological variation:
+Use **fastMNN** (Mutual Nearest Neighbours) to reduce replicate-specific technical differences while retaining donor-level variation as far as possible:
 
-UMAP is an algorithm that takes a high-dimensional dataset (such as a single-cell RNA dataset) and reduces it to a low-dimensional plot that retains much of the original information
-
-Despite the partial confounding, we proceed with fastMNN but **validate** that it works correctly:
 
 **Key principle:** Apply correction, then validate that biological signal is preserved
 
 ```{r batch_correction_fastmnn, fig.width=12, fig.height=5}
+
 # Apply fastMNN (correcting for replicate only, not individual)
 umi_mnn <- fastMNN(
   umi_filtered,
@@ -411,7 +432,6 @@ colData(umi_mnn)[, keep_cols] <- colData(umi_filtered)[colnames(umi_mnn), keep_c
 # UMAP on corrected data
 umi_mnn <- runUMAP(umi_mnn, dimred = "corrected")
 
-# Visualise results
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "replicate") +
   ggtitle("After Correction: Replicates Well-Mixed") +
   theme_minimal()
@@ -427,14 +447,15 @@ ggsave(file.path(outdir, "batch_correction_umap.png"), p1 + p2,
 ```
 
 **Visual Assessment:**
-- **Left:** Replicates (r1, r2, r3) are well-mixed = batch effects removed
-- **Right:** Individuals form distinct clusters = biological signal preserved
+- **Left:** Replicates (r1, r2, r3) are well-mixed. replicates overlap strongly in the corrected UMAP. Therefore, replicate-driven structure has been largely removed.
+- **Right:** donors still form distinct islands. Therefore, substantial donor-level biological signal remains.
 
 ### 5.3.1 Quantitative Validation
 
-Calculate variance explained (R2) before and after correction:
+To support the visual impression, we quantify the variance in the first 10 PCs explained by replicate and individual before and after correction.
 
 ```{r correction_metrics}
+
 # Verify PCA exists
 if (!"PCA" %in% reducedDimNames(umi_filtered)) {
   stop("PCA not found in umi_filtered. Make sure section 5.1 ran correctly.")
@@ -452,16 +473,16 @@ calc_adjR2 <- function(pcs, factor) {
 }
 
 # Calculate R² for replicate and individual
+
 # BEFORE correction
 r2_rep_before <- calc_adjR2(pcs_before, umi_filtered$replicate)
 r2_ind_before <- calc_adjR2(pcs_before, umi_filtered$individual)
 
-# AFTER correction (using matched cells only)
+# AFTER correction
 cells_match <- match(colnames(pcs_after), colnames(pcs_before))
 r2_rep_after <- calc_adjR2(pcs_after, umi_mnn$replicate)
 r2_ind_after <- calc_adjR2(pcs_after, umi_mnn$individual)
 
-# Create metrics table
 metrics <- data.frame(
   PC = 1:10,
   R2_replicate_before = round(r2_rep_before, 3),
@@ -485,11 +506,12 @@ cat("  Max R² for individual:", round(max(r2_ind_after), 3), "\n")
 
 
 **Key Metrics:**
-- **Batch (replicate) R²:** Reduced from ~0.69 to ~0.02 (98% reduction)
-#- **Biology (individual) R²:** Preserved at ~0.92 (sufficient for analysis) ##
+- **Batch (replicate) R²:** Reduced from ~0.69 to ~0.07 (Replicate explains a much smaller proportion of variance after correction (adj. R² drops by an order of magnitude across PCs))
+
+- **Biology (individual) R²:** Individual still explains a substantial proportion of variance after correction.
 
 **Conclusion:** 
-This tells us individuals were not evenly distributed across replicates, so batch and biology are partially confounded
+fastMNN with batch = replicate substantially reduces replicate-specific technical effects while retaining enough donor-level structure to study biological differences, even though donor and replicate are not fully independent.
 
 
 # 5. Clustering and Cell Type Identification
@@ -497,6 +519,7 @@ This tells us individuals were not evenly distributed across replicates, so batc
 ## 5.1 Graph-Based Clustering
 
 ```{r clustering, fig.width=12, fig.height=5}
+
 # Build shared nearest neighbor (SNN) graph
 snn_graph <- buildSNNGraph(umi_mnn, use.dimred = "corrected", k = 20)
 
@@ -506,7 +529,7 @@ colLabels(umi_mnn) <- factor(clusters)
 
 print(table(colLabels(umi_mnn)))
 
-# Visualise clusters
+
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
   ggtitle("Clusters") +
   theme_minimal() +
@@ -528,7 +551,6 @@ ggsave(file.path(outdir, "clustering_overview.png"), combined,
 ```
 
 **Observation:** 
-- Identified **`r length(unique(clusters))`** distinct clusters
 - No strong mitochondrial gradient = good quality control
 - Clusters show some individual enrichment
 
@@ -602,9 +624,11 @@ plotHeatmap(umi_filtered,
 
 ## 5.3 Reference-Based Cell Type Annotation
 
-Use **SingleR** to automatically annotate cell types:
+Use **SingleR** to automatically annotate cell types. 
+We use SingleR with the Human Primary Cell Atlas reference as a coarse sanity check, not as definitive iPSC cell-type annotation. The main biological interpretation relies on unsupervised clusters, marker genes, and canonical pluripotency markers; we therefore refer to these groups as iPSC subpopulations rather than assigning them to differentiated cell types from the reference.
 
 ```{r singler_annotation, fig.width=10, fig.height=5}
+
 # Ensure rownames are clean Ensembl IDs
 rownames(umi_filtered) <- sub("\\.\\d+$", "", rownames(umi_filtered))
 
@@ -617,8 +641,9 @@ Sys.setenv(
   BIOCFILECACHE_CACHE = cache_dir
 )
 
-# Load reference (Blueprint + ENCODE)
-ref <- celldex::BlueprintEncodeData(ensembl = TRUE)
+# Load a reference that includes stem/progenitor-like profiles
+# (Human Primary Cell Atlas instead of Blueprint/ENCODE)
+ref <- celldex::HumanPrimaryCellAtlasData(ensembl = TRUE)
 
 # Run SingleR
 pred <- SingleR(
@@ -630,7 +655,7 @@ pred <- SingleR(
 # Add to umi_mnn
 umi_mnn$ref_label <- pred$labels
 
-# Visualise
+
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "ref_label") +
   ggtitle("SingleR Cell Type Annotation") +
   theme_minimal() +
@@ -642,15 +667,17 @@ p2 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
 
 p1 + p2
 
-ggsave(file.path(outdir, "cell_type_annotation.png"), p1 + p2, 
-       width = 14, height = 5, dpi = 300)
+#ggsave(file.path(outdir, "cell_type_annotation.png"), p1 + p2, width = 14, height = 5, dpi = 300)
 
-# Cross-tabulation
-cat("\nCell type by cluster:\n")
 print(table(Cluster = umi_mnn$label, CellType = umi_mnn$ref_label))
 ```
+**Result**
 
-**Note:** SingleR provides automated labels but may not perfectly match iPSC biology. Manual curation with known stem cell markers (e.g., POU5F1, NANOG, SOX2) is recommended for publication.
+- All cells are in a pluripotent or near-pluripotent state.
+- There is no evidence of contaminating differentiated cell types.
+- UMAP structure is not driven by ESC vs iPSC calls.
+
+
 
 
 # 6. Cell Cycle Analysis
@@ -755,7 +782,8 @@ g2m_scores_norm <- scale(g2m_scores)[,1]
 phases <- rep("G1", ncol(sce_sym))
 phases[s_scores_norm > 0.5] <- "S"
 phases[g2m_scores_norm > 0.5] <- "G2M"
-# If both high, prioritize G2M (cells progress S → G2M)
+
+# If both high, prioritise G2M (cells progress S to G2M)
 phases[s_scores_norm > 0.5 & g2m_scores_norm > 0.5] <- "G2M"
 
 cat("Cell cycle phase assignment:\n")
@@ -771,13 +799,12 @@ umi_mnn$S_score <- s_scores_norm
 umi_mnn$G2M_score <- g2m_scores_norm  
 umi_mnn$phase <- factor(phases, levels = c("G1", "S", "G2M"))
 
-# Verify
 cat("\nTransfer verification:\n")
 cat("- NAs in phase:", sum(is.na(umi_mnn$phase)), "\n")
 cat("- Phase distribution in umi_mnn:\n")
 print(table(umi_mnn$phase))
 
-# Visualize
+
 p1 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "phase") +
   ggtitle("Cell Cycle Phase\n(from GO gene sets)") +
   scale_color_manual(values = c("G1" = "gray60", "S" = "steelblue", "G2M" = "orange")) +
@@ -799,8 +826,6 @@ p4 <- plotReducedDim(umi_mnn, "UMAP", colour_by = "label") +
 
 combined <- (p1 + p2) / (p3 + p4)
 print(combined)
-ggsave(file.path(outdir, "cell_cycle_analysis.png"), combined, 
-       width = 12, height = 10, dpi = 300)
 
 # Summary table
 cat("\nCell cycle distribution:\n")
@@ -1324,105 +1349,10 @@ print(combined)
 
 ```
 
-**Interpretation:**
-- **Oxidative phosphorylation:** Metabolically active cells
-- **MYC targets:** Growth and proliferation
-- **E2F/G2M checkpoint:** Cell cycle progression
-- Different clusters show distinct pathway activities
-
----
-
-
----
-
-# 10. Conclusions
-
-## 10.1 Key Findings
-
-1. **Data Quality**
-   - Successfully processed **`r ncol(umi_filtered)` high-quality cells** from **3 individuals**
-   - Batch effects successfully corrected while preserving biological variation
-   - Scran normalization performed optimally
-
-2. **Cell Heterogeneity**
-   - Identified **`r length(unique(umi_filtered$cluster))` distinct subpopulations** within iPSC cultures
-   - Cell cycle heterogeneity contributes significantly to population structure
-   - Cells distributed across G1, S, and G2/M phases
-
-3. **Individual Variation**
-   - Detected **individual-specific gene expression patterns** reflecting genetic diversity
-   - Total DE genes across clusters: **`r sum(de_summary$DE_Genes, na.rm = TRUE)`**
-   - Pathway analysis reveals functional differences between donors
-
-4. **Biological Insights**
-   - iPSC populations are not homogeneous - even in culture
-   - Cell cycle state is a major source of variation
-   - Individual genetic background influences gene expression
-
-## 10.2 Technical Notes
-
-**Strengths of this analysis:**
-- Rigorous quality control and normalization
-- Proper batch correction with validation
-- Pseudo-bulk DE for robust statistical testing
-- Comprehensive pathway analysis
-
-**Limitations:**
-- Small sample size (3 individuals)
-- Single cell type (iPSCs)
-- SingleR annotations may not be perfect for stem cells
-
-## 10.3 Future Directions
-
-- **Trajectory analysis:** Map differentiation paths if present
-- **Gene regulatory networks:** Identify transcription factors driving subpopulations
-- **Integration:** Compare with other iPSC datasets
-- **Functional validation:** Experimental confirmation of key findings
-
----
-
-# 11. Session Information
-
-```{r session_info}
-#sessionInfo()
-
-# Check what's going on
-cat("Cells in umi_mnn:", ncol(umi_mnn), "\n")
-cat("Cells in umi_filtered:", ncol(umi_filtered), "\n")
-cat("Cells in sce_sym:", ncol(sce_sym), "\n\n")
-
-# Check if names match
-cat("umi_mnn and umi_filtered match:", 
-    identical(colnames(umi_mnn), colnames(umi_filtered)), "\n")
-cat("umi_mnn and sce_sym match:", 
-    identical(colnames(umi_mnn), colnames(sce_sym)), "\n\n")
-
-# Look at actual names
-cat("First cell names in umi_mnn:\n")
-print(head(colnames(umi_mnn), 3))
-cat("\nFirst cell names in sce_sym:\n")
-print(head(colnames(sce_sym), 3))
-
-# Test match
-test_match <- match(colnames(umi_mnn), colnames(sce_sym))
-cat("\nHow many NAs in match:", sum(is.na(test_match)), "out of", length(test_match), "\n")
-
-
-
-```
-
----
-
 # References
 
 - **Tung et al. (2017)** "Batch effects and the effective design of single-cell gene expression studies" *Scientific Reports*
 - **Lun et al. (2016)** "A step-by-step workflow for low-level analysis of single-cell RNA-seq data" *F1000Research*
 - **Haghverdi et al. (2018)** "Batch effects in single-cell RNA-sequencing data are corrected by matching mutual nearest neighbors" *Nature Biotechnology*
 
----
 
-**Analysis completed:** `r Sys.time()`
-
-**Analyst:** Your Name
-
-**Contact:** your.email@example.com

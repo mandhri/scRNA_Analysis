@@ -865,7 +865,6 @@ So if you correct/integrate properly and then score cell cycle and see: “my th
 
 ## 8.1 Pseudo-bulk Aggregation
 
-**Two aggregation strategies:**
 
 ### 8.1a. Cluster-based (Individual Comparison)
 
@@ -906,29 +905,23 @@ cluster 3 = only donor NA19239
 Aggregate by cell type (from SingleR) for donor comparisons within cell types:
 
 ```{r pseudobulk_celltype}
-# 1) make sure cells align
+
 stopifnot(identical(colnames(umi_filtered), colnames(umi_mnn)))
 
-# 2) get donor + celltype as plain character
 donor    <- as.character(umi_filtered$individual)
 celltype <- as.character(umi_mnn$ref_label)   # from SingleR
-# if you want to be extra safe:
 celltype[is.na(celltype)] <- "Unassigned"
 
-# 3) make ONE grouping factor: "celltype|donor"
 group <- interaction(celltype, donor, drop = TRUE)
 
-# 4) aggregate using the simple factor version
 pb_mat <- scuttle::sumCountsAcrossCells(umi_filtered, ids = group)
 
-# 5) wrap back into an SCE
 pb_celltype <- SingleCellExperiment(
   list(counts = pb_mat)
 )
 
-# 6) recover donor + celltype from the group levels
 grp_info <- do.call(rbind, strsplit(levels(group), split = "\\."))
-# interaction() uses '.' as separator by default
+
 colData(pb_celltype)$celltype <- grp_info[,1]
 colData(pb_celltype)$donor    <- grp_info[,2]
 

@@ -863,10 +863,20 @@ So if you correct/integrate properly and then score cell cycle and see: “my th
 
 # 8. Differential Expression Analysis
 
+Because fastMNN correction was applied to *replicate* only, the corrected UMAP
+retains clear donor separation, and graph-based clustering recovers three
+donor-specific islands (Section 5). As a result, each graph cluster corresponds
+almost exactly to a single individual.
+
+This means that pseudo-bulk differential expression between clusters is
+equivalent to **donor-level differential expression**. We therefore interpret
+these contrasts as testing **inter-individual differences in iPSC expression**,
+rather than distinct cell types or stable cell states.
+
 ## 8.1 Pseudo-bulk Aggregation
 
 
-### 8.1a. Cluster-based (Individual Comparison)
+### 8.1a. Donor-level (Cluster-based) aggregation
 
 Aggregate by cluster for direct individual comparisons:
 
@@ -899,10 +909,12 @@ cluster 2 = only donor NA19098
 
 cluster 3 = only donor NA19239
 
+Thus, “cluster DE” = “donor DE”.
 
-### 8.1b. Cell-Type-based (Within-Type Comparison)
+### 8.1b. Cell-type–based aggregation (optional)
 
-Aggregate by cell type (from SingleR) for donor comparisons within cell types:
+Used only to demonstrate how within-cell-type donor comparisons could be
+performed. Not the main focus of this dataset.
 
 ```{r pseudobulk_celltype}
 
@@ -929,9 +941,8 @@ table(pb_celltype$celltype, pb_celltype$donor)
 
 ```
 
-**Observation:** Cell types likely shared across donors → can test within-cell-type effects.
 
-## 8.2 Differential Expression Analysis
+## 8.2 Donor-level Differential Expression (pairwise comparisons)
 
 
 ### 8.2a: Compare Clusters (= Compare Individuals)
@@ -939,13 +950,13 @@ table(pb_celltype$celltype, pb_celltype$donor)
 Since each cluster = one individual, we compare clusters directly:
 
 ```{r de_clusters, results='hide'}
-# Initialize results storage
+
 de_cluster_results <- list()
 
-# Get all pairwise cluster comparisons
+# all pairwise cluster comparisons
 clusters <- levels(pb_cluster$cluster)
-cat("=== STRATEGY 1: CLUSTER COMPARISONS ===\n")
-cat("Comparing", length(clusters), "clusters in pairwise fashion\n\n")
+cat("CLUSTER COMPARISONS")
+cat("Comparing", length(clusters), "clusters in pairwise")
 
 # For each pair of clusters
 for (i in 1:(length(clusters)-1)) {
@@ -956,17 +967,17 @@ for (i in 1:(length(clusters)-1)) {
     comparison_name <- paste0("Cluster_", clu1, "_vs_", clu2)
     cat("Testing", comparison_name, "...\n")
     
-    # Subset to these two clusters
+    # Subset
     keep <- pb_cluster$cluster %in% c(clu1, clu2)
     mat <- assay(pb_cluster, "counts")[, keep, drop = FALSE]
     cluster_group <- droplevels(pb_cluster$cluster[keep])
     replicate <- droplevels(pb_cluster$replicate[keep])
     
-    # EdgeR pipeline
+    # EdgeR
     y <- DGEList(mat)
     y <- calcNormFactors(y)
     
-    # Design: cluster + replicate (blocking for technical batch)
+    # Design: cluster + replicate (blocking for tech batch)
     design <- model.matrix(~ 0 + cluster_group + replicate)
     colnames(design) <- make.names(colnames(design))
     
@@ -976,10 +987,9 @@ for (i in 1:(length(clusters)-1)) {
     
     cat("  Testing", nrow(y), "genes after filtering\n")
     
-    # Estimate dispersion
+    # dispersion
     y <- estimateDisp(y, design)
     
-    # Fit model
     fit <- glmQLFit(y, design)
     
     # Test: cluster 1 vs cluster 2
@@ -989,7 +999,6 @@ for (i in 1:(length(clusters)-1)) {
     qlf <- glmQLFTest(fit, contrast = cn)
     tt <- topTags(qlf, n = Inf)$table
     
-    # Store results
     de_cluster_results[[comparison_name]] <- tt
     
     cat("  Found", sum(tt$FDR < 0.05), "DE genes (FDR < 0.05)\n")
@@ -1005,6 +1014,7 @@ Because clustering on replicate-corrected data preserved donor structure, each c
 
 
 ```{r de_summary}
+
 if (length(de_cluster_results) == 0) {
   cat("\nCluster-level DE: none computed.\n")
 } else {
@@ -1033,7 +1043,7 @@ plot_volcano <- function(de_table, title, top_n = 10) {
   df$significant <- ifelse(df$FDR < 0.05 & abs(df$logFC) > 1,
                            "Significant", "Not Significant")
 
-  # order by |logFC| and create labels
+  # order by logFC and create labels
   df <- df[order(abs(df$logFC), decreasing = TRUE), ]
   df$label <- ""
 
@@ -1062,8 +1072,6 @@ plot_volcano <- function(de_table, title, top_n = 10) {
     )
 }
 
-# 2) make volcanoes for the DE that actually exists
-#    (pairwise cluster/donor comparisons)
 for (comp in names(de_cluster_results)) {
   de_tab <- de_cluster_results[[comp]]
   if (sum(de_tab$FDR < 0.05) > 0) {

@@ -944,10 +944,7 @@ table(pb_celltype$celltype, pb_celltype$donor)
 
 ## 8.2 Donor-level Differential Expression (pairwise comparisons)
 
-
-### 8.2a: Compare Clusters (= Compare Individuals)
-
-Since each cluster = one individual, we compare clusters directly:
+Since each cluster = one individual,each pairwise contrast compares two individuals.
 
 ```{r de_clusters, results='hide'}
 
@@ -1002,15 +999,14 @@ for (i in 1:(length(clusters)-1)) {
     de_cluster_results[[comparison_name]] <- tt
     
     cat("  Found", sum(tt$FDR < 0.05), "DE genes (FDR < 0.05)\n")
-    cat("  -", sum(tt$FDR < 0.05 & tt$logFC > 0), "higher in Cluster", clu1, "\n")
-    cat("  -", sum(tt$FDR < 0.05 & tt$logFC < 0), "higher in Cluster", clu2, "\n\n")
+    cat(" ", sum(tt$FDR < 0.05 & tt$logFC > 0), "higher in Cluster", clu1, "\n")
+    cat(" ", sum(tt$FDR < 0.05 & tt$logFC < 0), "higher in Cluster", clu2, "\n\n")
   }
 }
 ```
 **NOTE:**
 
-Because clustering on replicate-corrected data preserved donor structure, each cluster corresponded to a single donor. Therefore, cluster-level pseudo-bulk DE effectively tests donor-to-donor differences, not differences between independent cell states. We still include these results to demonstrate the pseudo-bulk + edgeR workflow, but interpretation should be limited to donor-associated variation in this dataset
-
+These results quantify inter-individual variation between the three Yoruba iPSC donors.
 
 
 ```{r de_summary}
@@ -1031,101 +1027,83 @@ if (length(de_cluster_results) == 0) {
 
 ```
 
-## 7.3 Volcano Plots
+## 7.3 Volcano Plots + Gene Annotation
 
 ```{r volcano_plots, fig.width=8, fig.height=6}
 
 plot_volcano <- function(de_table, title, top_n = 10) {
-  df <- as.data.frame(de_table)
-  df$gene <- rownames(de_table)
+df <- as.data.frame(de_table)
+df$gene <- rownames(df)
 
-  # mark significance
-  df$significant <- ifelse(df$FDR < 0.05 & abs(df$logFC) > 1,
-                           "Significant", "Not Significant")
+df$significant <- ifelse(df$FDR < 0.05 & abs(df$logFC) > 1,
+"Significant", "Not Significant")
 
-  # order by logFC and create labels
-  df <- df[order(abs(df$logFC), decreasing = TRUE), ]
-  df$label <- ""
+df <- df[order(abs(df$logFC), decreasing = TRUE), ]
+df$label <- ""
+n_to_label <- min(top_n, nrow(df))
+df$label[1:n_to_label] <- df$gene[1:n_to_label]
 
-  n_to_label <- min(top_n, nrow(df))
-  if (n_to_label > 0) {
-    df$label[1:n_to_label] <- df$gene[1:n_to_label]
-  }
-
-  ggplot(df, aes(x = logFC, y = -log10(PValue), color = significant)) +
-    geom_point(alpha = 0.6, size = 1.5) +
-    geom_text_repel(aes(label = label), size = 3, max.overlaps = 20) +
-    scale_color_manual(values = c("Not Significant" = "grey70",
-                                  "Significant" = "red3")) +
-    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
-    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
-    theme_minimal(base_size = 12) +
-    labs(
-      title = title,
-      x = "Log2 fold change",
-      y = "-log10 P-value",
-      color = ""
-    ) +
-    theme(
-      legend.position = "bottom",
-      plot.title = element_text(hjust = 0.5, face = "bold")
-    )
+ggplot(df, aes(x = logFC, y = -log10(PValue), color = significant)) +
+geom_point(alpha = 0.6, size = 1.5) +
+geom_text_repel(aes(label = label), size = 3, max.overlaps = 20) +
+scale_color_manual(values = c("Not Significant" = "grey70",
+"Significant" = "red3")) +
+geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+theme_minimal() +
+labs(title = title)
 }
 
 for (comp in names(de_cluster_results)) {
-  de_tab <- de_cluster_results[[comp]]
-  if (sum(de_tab$FDR < 0.05) > 0) {
-    p <- plot_volcano(de_tab, title = paste("DE:", comp))
-    print(p)
-    ggsave(file.path(de_dir, paste0("volcano_", comp, ".png")),
-           p, width = 8, height = 6, dpi = 300)
-  }
+de_tab <- de_cluster_results[[comp]]
+if (sum(de_tab$FDR < 0.05) > 0) {
+print(plot_volcano(de_tab, paste("DE:", comp)))
 }
+}
+
+
+
 ```
 
 **Interpretation:**
-- 1. DE: Cluster_1_vs_2
+- 1. Donor 1 vs Donor 2
 
 (NA19101 vs NA19098)
 
-We got 161 DE genes (FDR < 0.05). So these two donors are different, but not wildly different.
+161 DE genes (FDR < 0.05). So these two donors are different, but not wildly different.
 Points to the right (logFC > 0): genes higher in cluster 1 / NA19101.
 Points to the left (logFC < 0): genes higher in cluster 2 / NA19098.
 A few genes have quite large negative FC (like ~ –10) = those are strongly up in donor 2.
-The shape is pretty balanced = these two donors are the most similar pair among the three.
-So: NA19101 vs NA19098 = moderate donor-specific expression.
+The shape is pretty balanced = these two donors are the most similar pair among the 3.
+So, Donor 1 vs Donor 2(NA19101 vs NA19098) = moderate donor-specific expression.
 
 
-- 2. DE: Cluster_1_vs_3
+- 2. Donor 1 vs Donor 3
 
 (NA19101 vs NA19239)
 
-This is the big one: 437 DE genes.
+437 DE genes.
 Much fatter cloud of red points above the FDR line = way more genes changing.
 We have a huge positive logFC gene (ENSG00000106153) = that gene is much higher in cluster 1 / NA19101 than in NA19239.
 Also some big negatives = genes higher in cluster 3 / NA19239.
-This tells us: donor NA19239 is transcriptionally the most different from NA19101.
-So: 1 vs 3 is your strongest donor contrast.
+donor NA19239 is transcriptionally the most different from NA19101.
+So: Donor 1 vs Donor 3 is strongest donor contrast.
 
 
-- 3. DE: Cluster_2_vs_3
+- 3. DE:Donor 2 vs Donor 3 Cluster
 
 (NA19098 vs NA19239)
-We found 144 DE genes = so still clear differences, but a bit less than 1 vs 3.
-Again we see that one extreme gene on the right (same ENSG00000106153) = meaning that gene is high in cluster 2 / NA19098 and low in NA19239.
-Some genes far to the left → those are higher in cluster 3 / NA19239.
-So: 2 vs 3 is also different, but not as dramatic as 1 vs 3.
+144 DE genes = so still clear differences, but a bit less than 1 vs 3.
+One extreme gene on the right (same ENSG00000106153) = meaning that gene is high in cluster 2 / NA19098 and low in NA19239.
+Some genes far to the left,so those are higher in cluster 3 / NA19239.
+Donor 2 vs Donor 3  is also different, but not as dramatic as 1 vs 3.
 
 
-- What does that all mean?
-
-All three donors differ at the expression level.
-Donor NA19239 (cluster 3) is the most distinct — whenever cluster 3 is in the comparison, we get more DE.
-The volcanoes look “nice”: centered V, clear FDR cutoff, reasonable numbers → your pseudo-bulk + edgeR workflow is behaving.
-
-But — and this is the important framing —
-these are donor-level differences, not “cell type A vs cell type B”.
-We preserved donor biology during integration (we only corrected replicates), so your clusters == donors. Therefore your DE is telling we “what genes differ between these 3 Yoruba iPSC lines.”
+**Overall conclusion:**
+These contrasts demonstrate substantial inter-individual transcriptional
+variation among the three Yoruba iPSC lines. Because clustering reflects donor
+identity, these results should not be interpreted as cell-type differences,
+but as donor-associated transcriptional signatures within iPSCs.
 
 
 
@@ -1139,11 +1117,12 @@ We preserved donor biology during integration (we only corrected replicates), so
 Test whether biological pathways are enriched in differentially expressed genes:
 
 ```{r gsea, results='hide'}
+
 # Hallmark gene sets
 hallmark <- msigdbr(species = "Homo sapiens", category = "H")
 hallmark_list <- split(hallmark$gene_symbol, hallmark$gs_name)
 
-# helper: ENSEMBL -> SYMBOL
+# ENSEMBL to SYMBOL
 ens_to_symbol <- function(ens_vec) {
   ens_clean <- sub("\\.\\d+$", "", ens_vec)
   AnnotationDbi::mapIds(
@@ -1168,10 +1147,8 @@ for (comp in names(de_cluster_results)) {
   ranks <- -log10(de_tab$PValue) * sign(de_tab$logFC)
   names(ranks) <- syms
   
-  # clean
   keep <- !is.na(names(ranks)) & !is.na(ranks) & is.finite(ranks)
   ranks <- ranks[keep]
-  # collapse duplicate symbols by max rank
   ranks <- tapply(ranks, names(ranks), max)
   ranks <- sort(ranks, decreasing = TRUE)
   
@@ -1191,7 +1168,6 @@ for (comp in names(de_cluster_results)) {
   fg <- fg[order(fg$pval), ]
   enrichment_results[[comp]] <- fg
   
-  # ---- FIX: flatten list column before writing ----
   fg_out <- as.data.frame(fg)
   fg_out$leadingEdge <- vapply(fg$leadingEdge, paste, collapse = ";", FUN.VALUE = character(1))
   
@@ -1230,102 +1206,67 @@ for (comp in names(enrichment_results)) {
 Calculate pathway scores for each cell using singscore:
 
 ```{r pathway_scoring, fig.width=10, fig.height=8}
-hallmark <- msigdbr::msigdbr(species = "Homo sapiens", category = "H")
-pathways <- split(hallmark$gene_symbol, hallmark$gs_name)
 
-# SYMBOL SCE
-syms <- rowData(umi_filtered)$SYMBOL
-ok   <- !is.na(syms) & syms != ""
-sce_sym <- umi_filtered[ok, ]
-rownames(sce_sym) <- syms[ok]
-if (!"logcounts" %in% assayNames(sce_sym)) {
-  sce_sym <- scuttle::logNormCounts(sce_sym)
+# 1) Collect significant Hallmark pathways from GSEA (FDR < 0.5)
+
+sig_pathways <- do.call(rbind, lapply(names(enrichment_results), function(comp) {
+  res <- enrichment_results[[comp]]
+  if (is.null(res) || nrow(res) == 0) return(NULL)
+
+  sig <- res[res$padj < 0.5, c("pathway", "padj", "NES")]
+  if (nrow(sig) == 0) return(NULL)
+
+  sig$comparison <- comp
+  sig
+}))
+
+if (is.null(sig_pathways)) {
+  stop("No significant Hallmark pathways (FDR < 0.1) were detected in GSEA.")
 }
 
+# Order by FDR within comparison
+sig_pathways <- sig_pathways[order(sig_pathways$comparison, sig_pathways$padj), ]
 
+# For each clusyter, take the top 5 significant pathways
+sel_paths <- unlist(tapply(sig_pathways$pathway,
+                           sig_pathways$comparison,
+                           function(x) head(unique(x), 5)))
 
-# 1) get expression in SYMBOL space
-expr <- assay(sce_sym, "logcounts")
+paths_to_score <- unique(sel_paths)
 
-# 2) convert sparse -> dense
-expr_mat <- as.matrix(expr)
+cat("Hallmark pathways selected for per-cell scoring (FDR < 0.1 in GSEA):\n")
+print(sig_pathways[sig_pathways$pathway %in% paths_to_score, ])
 
-# 3) rank once
-rnk <- singscore::rankGenes(expr_mat)
+# Per-cell scoring for the selected pathways only
 
-# 4) score each Hallmark pathway
-scores <- vapply(pathways, function(gs) {
+expr_mat <- as.matrix(assay(sce_sym, "logcounts"))
+rnk      <- singscore::rankGenes(expr_mat)
+
+scores <- vapply(paths_to_score, function(gs_name) {
+  gs <- pathways[[gs_name]]          # reuse the Hallmark list
   gs <- intersect(gs, rownames(sce_sym))
-  if (length(gs) < 5) {
-    return(rep(NA_real_, ncol(sce_sym)))
-  }
+  if (length(gs) < 5) return(rep(NA_real_, ncol(sce_sym)))
   singscore::simpleScore(rnk, upSet = gs)$TotalScore
 }, FUN.VALUE = numeric(ncol(sce_sym)))
 
-
-
 scores_df <- as.data.frame(scores)
 rownames(scores_df) <- colnames(sce_sym)
-
-# align to umi_mnn cells
 scores_df <- scores_df[colnames(umi_mnn), , drop = FALSE]
 
 for (nm in colnames(scores_df)) {
   umi_mnn[[nm]] <- scores_df[[nm]]
 }
 
-
-plotReducedDim(umi_mnn, "UMAP", colour_by = "HALLMARK_G2M_CHECKPOINT")
-
-
-
-
-# 1) collect top pathways from all contrasts
-sel_paths <- list()
-
-for (comp in names(enrichment_results)) {
-  res <- enrichment_results[[comp]]
-  # keep significant ones
-  sig <- res[res$padj < 0.1, ]
-  # order by padj
-  sig <- sig[order(sig$padj), ]
-  # take top 5 (or fewer if not enough)
-  sig <- head(sig$pathway, 5)
-  sel_paths[[comp]] <- sig
-}
-
-# 2) make a unique list of pathways to score
-paths_to_score <- unique(unlist(sel_paths))
-paths_to_score
-
-
-expr_mat <- as.matrix(assay(sce_sym, "logcounts"))
-rnk <- singscore::rankGenes(expr_mat)
-
-scores <- vapply(paths_to_score, function(gs_name) {
-  gs <- pathways[[gs_name]]          # reuse the hallmark list
-  gs <- intersect(gs, rownames(sce_sym))
-  if (length(gs) < 5) return(rep(NA_real_, ncol(sce_sym)))
-  singscore::simpleScore(rnk, upSet = gs)$TotalScore
-}, FUN.VALUE = numeric(ncol(sce_sym)))
-
+# UMAP overlays for the selected pathways
 
 plot_list <- lapply(paths_to_score, function(pw) {
-  if (pw %in% colnames(colData(umi_mnn))) {
-    plotReducedDim(umi_mnn, "UMAP", colour_by = pw) +
-      ggtitle(gsub("HALLMARK_", "", pw)) +
-      scale_color_viridis_c() +
-      theme_minimal() +
-      theme(legend.position = "right")
-  } else {
-    NULL
-  }
+  plotReducedDim(umi_mnn, "UMAP", colour_by = pw) +
+    ggtitle(gsub("HALLMARK_", "", pw)) +
+    scale_color_viridis_c() +
+    theme_minimal() +
+    theme(legend.position = "right")
 })
 
-# drop NULLs (in case a pathway wasn't scored)
-plot_list <- Filter(Negate(is.null), plot_list)
-
-# show in a grid
 combined <- wrap_plots(plot_list, ncol = 2)
 print(combined)
 
